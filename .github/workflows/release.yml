@@ -74,6 +74,13 @@ jobs:
     name: F-Droid-Updatesite veröffentlichen
     needs: android
     runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","linux","x64"]') }}
+    env:
+      # Eigener Index-Schlüssel je Update-Repo: F-Droid erkennt Paketquellen am Fingerabdruck und
+      # hält zwei Quellen mit demselben Schlüssel für Spiegel voneinander. Die APKs selbst bleiben
+      # mit dem gemeinsamen App-Schlüssel signiert. Ohne eigene Secrets: Rückfall auf den App-Schlüssel.
+      FD_KS_B64: ${{ secrets.FDROID_KEYSTORE_P12_BASE64 || secrets.KEYSTORE_P12_BASE64 }}
+      FD_KS_PW: ${{ secrets.FDROID_KEYSTORE_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+      FD_ALIAS: ${{ secrets.FDROID_KEYSTORE_P12_BASE64 && (vars.FDROID_KEYSTORE_ALIAS || 'fdroid') || (vars.KEYSTORE_ALIAS || 'release') }}
     steps:
       - name: APK laden
         uses: actions/download-artifact@v8
@@ -84,54 +91,55 @@ jobs:
         # das APKs moderner AGP-Versionen nicht parsen kann ("res1 must be zero").
         run: |
           python3 -c 'import ensurepip' 2>/dev/null || { apt-get update -qq && apt-get install -y -qq python3-venv > /dev/null; }
-          python3 -m venv /tmp/fdroid && /tmp/fdroid/bin/pip install -q fdroidserver
+          python3 -m venv /tmp/fdroid && /tmp/fdroid/bin/pip install -q fdroidserver qrcode
           echo "/tmp/fdroid/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)" >> "$GITHUB_PATH"
       - name: F-Droid-Repository erzeugen
-        env:
-          KEYSTORE_P12_BASE64: ${{ secrets.KEYSTORE_P12_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ vars.KEYSTORE_ALIAS || 'release' }}
         run: |
           OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')
           mkdir -p fdroid/repo
           cp "$APP_NAME"-*.apk fdroid/repo/
-          echo "$KEYSTORE_P12_BASE64" | base64 -d > fdroid/keystore.p12
+          echo "$FD_KS_B64" | base64 -d > fdroid/keystore.p12
           cat > fdroid/config.yml <<CFG
           repo_url: https://$OWNER.github.io/$APP_NAME/repo
           repo_name: $APP_TITLE – Update-Repo
           repo_description: Update-Repository der App „$APP_TITLE“ (verschlüsselt, GitHub-Backend).
-          repo_keyalias: $KEY_ALIAS
+          repo_keyalias: $FD_ALIAS
           keystore: keystore.p12
-          keystorepass: $KEYSTORE_PASSWORD
-          keypass: $KEYSTORE_PASSWORD
+          keystorepass: $FD_KS_PW
+          keypass: $FD_KS_PW
           archive_older: 0
           CFG
           cd fdroid && fdroid update --create-metadata
       - name: Repo-Fingerprint ermitteln
         id: fpr
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ vars.KEYSTORE_ALIAS || 'release' }}
         run: |
-          FPR=$(keytool -exportcert -keystore fdroid/keystore.p12 -alias "$KEY_ALIAS" \
-                -storepass "$KEYSTORE_PASSWORD" 2>/dev/null | sha256sum | cut -d' ' -f1 | tr 'a-f' 'A-F')
+          FPR=$(keytool -exportcert -keystore fdroid/keystore.p12 -alias "$FD_ALIAS" \
+                -storepass "$FD_KS_PW" 2>/dev/null | sha256sum | cut -d' ' -f1 | tr 'a-f' 'A-F')
           echo "fingerprint=$FPR" >> "$GITHUB_OUTPUT"
       - name: Pages-Site zusammenstellen (ohne Keystore/Config!)
         run: |
           OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')
           URL="https://$OWNER.github.io/$APP_NAME/repo?fingerprint=${{ steps.fpr.outputs.fingerprint }}"
+          LINK="fdroidrepos://${URL#https://}"
           mkdir -p site
           cp -r fdroid/repo site/repo
           rm -f site/repo/keystore.p12 site/repo/config.yml
+          python3 - "$URL" > site/qr.svg <<'PY'
+          import sys, io, qrcode, qrcode.image.svg
+          img = qrcode.make(sys.argv[1], image_factory=qrcode.image.svg.SvgPathImage, box_size=12, border=2)
+          buf = io.BytesIO(); img.save(buf); sys.stdout.write(buf.getvalue().decode())
+          PY
           cat > site/index.html <<HTML
           <!doctype html><html lang="de"><meta charset="utf-8">
           <title>$APP_TITLE – F-Droid-Repo</title>
           <body style="font-family:sans-serif;max-width:40em;margin:2em auto">
           <h1>$APP_TITLE – Update-Repository</h1>
-          <p>Diese Seite ist eine F-Droid-Updatesite. Im F-Droid-Client unter
-          „Einstellungen → Paketquellen“ folgende URL hinzufügen:</p>
-          <p><code>$URL</code></p>
+          <p>Diese Seite ist eine F-Droid-Updatesite. In F-Droid unter
+          „Einstellungen → Paketquellen → +“ den QR-Code scannen – oder auf dem Handy
+          <a href="$LINK">hier tippen</a>, um die Paketquelle direkt in F-Droid hinzuzufügen.</p>
+          <p><img src="qr.svg" alt="QR-Code der Paketquelle" width="300" height="300"></p>
+          <p><code style="word-break:break-all">$URL</code></p>
           <p>Aktuelle Version: $GITHUB_REF_NAME (Build $GITHUB_RUN_NUMBER)</p>
           <p>APK direkt: siehe <a href="https://github.com/$GITHUB_REPOSITORY/releases">GitHub Releases</a>.</p>
           </body></html>
