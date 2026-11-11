@@ -53,7 +53,8 @@ jobs:
             "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" "$KEY_ALIAS" > android/key.properties
       - run: flutter pub get
       - run: flutter test
-      - run: flutter build apk --release --build-name=${{ steps.ver.outputs.version }} --build-number=${{ github.run_number }}
+      # Nur 64-Bit-ARM (alle aktuellen Handys): rund ein Drittel der Universal-APK.
+      - run: flutter build apk --release --target-platform android-arm64 --build-name=${{ steps.ver.outputs.version }} --build-number=${{ github.run_number }}
       - name: APK benennen
         run: cp build/app/outputs/flutter-apk/app-release.apk "$APP_NAME-$GITHUB_REF_NAME.apk"
       - name: An Release anhängen
