@@ -1,0 +1,146 @@
+# Release-Pipeline: läuft bei jedem Git-Tag "v*" (z. B. v0.1.0).
+#
+# Erzeugt (wie bei encrypted-todo-app):
+#  1. signierte Android-APK      -> GitHub-Release-Asset
+#  2. F-Droid-Updatesite         -> Branch gh-pages (GitHub Pages)
+#
+# Läuft auf den eigenen (self-hosted) Runnern; Flutter steckt im Runner-Image
+# (werkstatt/github/server-runner), daher kein "container:"
+# (Runner-Labels über die Repository-Variable RUNNER_LABELS umstellbar).
+#
+# Benötigte Repository-Secrets (Settings -> Secrets and variables -> Actions):
+#  KEYSTORE_P12_BASE64  - PKCS12-Keystore (Base64) — signiert sowohl die APK
+#                         als auch den F-Droid-Index (eigener Schlüssel für die
+#                         Apps unter SebastianWeberFZI, nicht der der TODO-App)
+#  KEYSTORE_PASSWORD    - Passwort des Keystores (Store = Key, wie bei PKCS12 üblich)
+# Optionale Repository-Variable:
+#  KEYSTORE_ALIAS       - Alias des Schlüssels (Standard: release)
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+env:
+  APP_NAME: encrypted-calendar-app
+  APP_TITLE: Kalender
+
+jobs:
+  android:
+    name: Android-Build (signierte APK)
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","linux","x64"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Version aus Tag ableiten
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Signatur-Keystore einrichten
+        env:
+          KEYSTORE_P12_BASE64: ${{ secrets.KEYSTORE_P12_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ vars.KEYSTORE_ALIAS || 'release' }}
+        run: |
+          echo "$KEYSTORE_P12_BASE64" | base64 -d > android/app/release-keystore.p12
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release-keystore.p12\n' \
+            "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" "$KEY_ALIAS" > android/key.properties
+      - run: flutter pub get
+      - run: flutter test
+      - run: flutter build apk --release --build-name=${{ steps.ver.outputs.version }} --build-number=${{ github.run_number }}
+      - name: APK benennen
+        run: cp build/app/outputs/flutter-apk/app-release.apk "$APP_NAME-$GITHUB_REF_NAME.apk"
+      - name: An Release anhängen
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.APP_NAME }}-*.apk
+      - name: APK als Artefakt für den F-Droid-Job
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: ${{ env.APP_NAME }}-*.apk
+      - name: Keystore vom Runner entfernen
+        if: always()
+        run: rm -f android/app/release-keystore.p12 android/key.properties
+
+  fdroid:
+    name: F-Droid-Updatesite veröffentlichen
+    needs: android
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","linux","x64"]') }}
+    steps:
+      - name: APK laden
+        uses: actions/download-artifact@v4
+        with:
+          name: apk
+      - name: fdroidserver installieren
+        # pip statt apt: das Ubuntu-Paket bringt ein zu altes androguard mit,
+        # das APKs moderner AGP-Versionen nicht parsen kann ("res1 must be zero").
+        run: |
+          python3 -c 'import ensurepip' 2>/dev/null || { apt-get update -qq && apt-get install -y -qq python3-venv > /dev/null; }
+          python3 -m venv /tmp/fdroid && /tmp/fdroid/bin/pip install -q fdroidserver
+          echo "/tmp/fdroid/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)" >> "$GITHUB_PATH"
+      - name: F-Droid-Repository erzeugen
+        env:
+          KEYSTORE_P12_BASE64: ${{ secrets.KEYSTORE_P12_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ vars.KEYSTORE_ALIAS || 'release' }}
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')
+          mkdir -p fdroid/repo
+          cp "$APP_NAME"-*.apk fdroid/repo/
+          echo "$KEYSTORE_P12_BASE64" | base64 -d > fdroid/keystore.p12
+          cat > fdroid/config.yml <<CFG
+          repo_url: https://$OWNER.github.io/$APP_NAME/repo
+          repo_name: $APP_TITLE – Update-Repo
+          repo_description: Update-Repository der App „$APP_TITLE“ (verschlüsselt, GitHub-Backend).
+          repo_keyalias: $KEY_ALIAS
+          keystore: keystore.p12
+          keystorepass: $KEYSTORE_PASSWORD
+          keypass: $KEYSTORE_PASSWORD
+          archive_older: 0
+          CFG
+          cd fdroid && fdroid update --create-metadata
+      - name: Repo-Fingerprint ermitteln
+        id: fpr
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ vars.KEYSTORE_ALIAS || 'release' }}
+        run: |
+          FPR=$(keytool -exportcert -keystore fdroid/keystore.p12 -alias "$KEY_ALIAS" \
+                -storepass "$KEYSTORE_PASSWORD" 2>/dev/null | sha256sum | cut -d' ' -f1 | tr 'a-f' 'A-F')
+          echo "fingerprint=$FPR" >> "$GITHUB_OUTPUT"
+      - name: Pages-Site zusammenstellen (ohne Keystore/Config!)
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')
+          URL="https://$OWNER.github.io/$APP_NAME/repo?fingerprint=${{ steps.fpr.outputs.fingerprint }}"
+          mkdir -p site
+          cp -r fdroid/repo site/repo
+          rm -f site/repo/keystore.p12 site/repo/config.yml
+          cat > site/index.html <<HTML
+          <!doctype html><html lang="de"><meta charset="utf-8">
+          <title>$APP_TITLE – F-Droid-Repo</title>
+          <body style="font-family:sans-serif;max-width:40em;margin:2em auto">
+          <h1>$APP_TITLE – Update-Repository</h1>
+          <p>Diese Seite ist eine F-Droid-Updatesite. Im F-Droid-Client unter
+          „Einstellungen → Paketquellen“ folgende URL hinzufügen:</p>
+          <p><code>$URL</code></p>
+          <p>Aktuelle Version: $GITHUB_REF_NAME (Build $GITHUB_RUN_NUMBER)</p>
+          <p>APK direkt: siehe <a href="https://github.com/$GITHUB_REPOSITORY/releases">GitHub Releases</a>.</p>
+          </body></html>
+          HTML
+      - name: Auf gh-pages veröffentlichen
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+      - name: Keystore vom Runner entfernen
+        if: always()
+        run: rm -rf fdroid/keystore.p12 fdroid/config.yml

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_month_label">Kalender · Monat</string>
+    <string name="widget_month_desc">Die nächsten Wochen mit farbigen Terminen</string>
+    <string name="widget_agenda_label">Kalender · Agenda</string>
+    <string name="widget_agenda_desc">Liste der nächsten Termine</string>
+</resources>

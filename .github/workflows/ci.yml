@@ -1,0 +1,29 @@
+# CI: Analyse + Tests bei jedem Push auf main.
+#
+# Läuft auf den eigenen (self-hosted) Runnern; Flutter steckt im Runner-Image
+# (werkstatt/github/server-runner), daher kein "container:".
+# Bewusst KEIN pull_request-Trigger: Bei einem öffentlichen Repo könnten
+# sonst Pull Requests aus Forks Code auf dem eigenen Runner ausführen.
+# Runner-Labels umstellbar über die Repository-Variable RUNNER_LABELS
+# (JSON-Liste), Standard: ["self-hosted","linux","x64"].
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Analyse & Tests
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","linux","x64"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
