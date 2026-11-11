@@ -22,7 +22,7 @@ jobs:
     name: Analyse & Tests
     runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","linux","x64"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: flutter pub get
       - run: flutter analyze --no-fatal-infos

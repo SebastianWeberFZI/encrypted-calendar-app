@@ -37,7 +37,7 @@ jobs:
     name: Android-Build (signierte APK)
     runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","linux","x64"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Version aus Tag ableiten
         id: ver
@@ -57,11 +57,11 @@ jobs:
       - name: APK benennen
         run: cp build/app/outputs/flutter-apk/app-release.apk "$APP_NAME-$GITHUB_REF_NAME.apk"
       - name: An Release anhängen
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: ${{ env.APP_NAME }}-*.apk
       - name: APK als Artefakt für den F-Droid-Job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apk
           path: ${{ env.APP_NAME }}-*.apk
@@ -75,7 +75,7 @@ jobs:
     runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["self-hosted","linux","x64"]') }}
     steps:
       - name: APK laden
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: apk
       - name: fdroidserver installieren
