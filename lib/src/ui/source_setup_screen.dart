@@ -30,6 +30,7 @@ class _SourceSetupScreenState extends State<SourceSetupScreen> {
   bool _showAdvanced = kWerkstatt;
   bool _busy = false;
   bool _obscure = true;
+  bool _obscureToken = true;
   String? _error;
 
   GithubConfig get _github => GithubConfig(
@@ -98,10 +99,18 @@ class _SourceSetupScreenState extends State<SourceSetupScreen> {
           _field(_repo, 'Repository', hint: 'z. B. encrypted-calendar-gemeinsam'),
           TextFormField(
             controller: _token,
-            obscureText: true,
-            decoration: const InputDecoration(
+            obscureText: _obscureToken,
+            autocorrect: false,
+            enableSuggestions: false,
+            keyboardType: TextInputType.visiblePassword,
+            decoration: InputDecoration(
               labelText: 'Fine-grained Personal Access Token',
-              helperText: 'Nur „Contents: Read and write“ auf genau dieses Repo',
+              helperText: 'Nur „Contents: Read and write“ auf die Daten-Repos',
+              suffixIcon: IconButton(
+                tooltip: _obscureToken ? 'Token anzeigen' : 'Token verbergen',
+                icon: Icon(_obscureToken ? Icons.visibility : Icons.visibility_off),
+                onPressed: () => setState(() => _obscureToken = !_obscureToken),
+              ),
             ),
             validator: (v) => (v ?? '').trim().isEmpty ? 'Pflichtfeld' : null,
           ),
