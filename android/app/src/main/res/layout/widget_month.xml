@@ -22,6 +22,13 @@
             android:maxLines="1"
             android:text="Kalender" />
         <ImageView
+            android:id="@+id/month_settings"
+            android:layout_width="32dp"
+            android:layout_height="34dp"
+            android:padding="7dp"
+            android:contentDescription="Kalender für dieses Widget wählen"
+            android:src="@drawable/ic_widget_settings" />
+        <ImageView
             android:id="@+id/month_add"
             android:layout_width="34dp"
             android:layout_height="34dp"
@@ -29,10 +36,23 @@
             android:contentDescription="Neuer Termin"
             android:src="@drawable/ic_widget_add" />
     </LinearLayout>
-    <ImageView
-        android:id="@+id/month_grid"
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="16dp"
+        android:orientation="horizontal">
+        <TextView style="@style/WidgetWeekday" android:text="Mo" />
+        <TextView style="@style/WidgetWeekday" android:text="Di" />
+        <TextView style="@style/WidgetWeekday" android:text="Mi" />
+        <TextView style="@style/WidgetWeekday" android:text="Do" />
+        <TextView style="@style/WidgetWeekday" android:text="Fr" />
+        <TextView style="@style/WidgetWeekday" android:text="Sa" android:textColor="#3F7FBF" />
+        <TextView style="@style/WidgetWeekday" android:text="So" android:textColor="#D9534F" />
+    </LinearLayout>
+    <ListView
+        android:id="@+id/month_list"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:scaleType="fitXY"
-        android:contentDescription="Monatsübersicht" />
+        android:divider="@null"
+        android:dividerHeight="0dp"
+        android:scrollbars="none" />
 </LinearLayout>

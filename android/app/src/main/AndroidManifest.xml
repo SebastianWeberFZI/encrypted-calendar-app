@@ -72,6 +72,16 @@
         </receiver>
         <service android:name=".AgendaWidgetService" android:exported="false"
             android:permission="android.permission.BIND_REMOTEVIEWS"/>
+        <service android:name=".MonthWidgetService" android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS"/>
+        <!-- Kalenderauswahl je Widget (beim Hinzufügen, „Widget anpassen“, Zahnrad) -->
+        <activity android:name=".WidgetConfigActivity" android:exported="true"
+            android:theme="@android:style/Theme.Material.Light.Dialog"
+            android:excludeFromRecents="true" android:taskAffinity="">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE"/>
+            </intent-filter>
+        </activity>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

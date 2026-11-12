@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'models/json_util.dart';
+
 enum CalendarViewMode { month, week, agenda }
 
 /// Geräte-lokale Einstellungen (nicht synchronisiert, keine Geheimnisse).
@@ -64,16 +66,28 @@ class LocalSettings {
   EmailSettings get email {
     final raw = _p.getString('email_settings');
     if (raw == null) return EmailSettings();
-    return EmailSettings.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    try {
+      return EmailSettings.fromJson(jMap(jsonDecode(raw)) ?? {});
+    } on FormatException {
+      return EmailSettings();
+    }
   }
 
   set email(EmailSettings v) =>
       _p.setString('email_settings', jsonEncode(v.toJson()));
 
   /// Bereits versandte Mail-Erinnerungen (Schlüssel -> Zeitpunkt).
-  Map<String, String> get sentMails =>
-      (jsonDecode(_p.getString('sent_mails') ?? '{}') as Map)
-          .cast<String, String>();
+  Map<String, String> get sentMails {
+    try {
+      final m = jMap(jsonDecode(_p.getString('sent_mails') ?? '{}')) ?? {};
+      return {
+        for (final e in m.entries)
+          if (e.value is String) e.key: e.value as String,
+      };
+    } on FormatException {
+      return {};
+    }
+  }
   set sentMails(Map<String, String> v) =>
       _p.setString('sent_mails', jsonEncode(v));
 
@@ -101,7 +115,12 @@ class EmailSettings {
     this.dailyAgenda = false,
     this.dailyAgendaHour = 7,
     Set<String>? excludedCalendars,
-  }) : excludedCalendars = excludedCalendars ?? {};
+    Map<String, dynamic>? extra,
+  })  : excludedCalendars = excludedCalendars ?? {},
+        extra = extra ?? {};
+
+  /// Einstellungen einer anderen App-Version – bleiben erhalten.
+  final Map<String, dynamic> extra;
 
   bool enabled;
   String host;
@@ -119,6 +138,7 @@ class EmailSettings {
   bool get isComplete => host.isNotEmpty && to.isNotEmpty;
 
   Map<String, dynamic> toJson() => {
+        ...extra,
         'enabled': enabled,
         'host': host,
         'port': port,
@@ -131,17 +151,22 @@ class EmailSettings {
         'excluded': excludedCalendars.toList(),
       };
 
+  static const _known = {
+    'enabled', 'host', 'port', 'ssl', 'username', 'from', 'to',
+    'daily_agenda', 'daily_agenda_hour', 'excluded',
+  };
+
   factory EmailSettings.fromJson(Map<String, dynamic> j) => EmailSettings(
-        enabled: j['enabled'] as bool? ?? false,
-        host: j['host'] as String? ?? '',
-        port: (j['port'] as num?)?.toInt() ?? 587,
-        ssl: j['ssl'] as bool? ?? false,
-        username: j['username'] as String? ?? '',
-        from: j['from'] as String? ?? '',
-        to: j['to'] as String? ?? '',
-        dailyAgenda: j['daily_agenda'] as bool? ?? false,
-        dailyAgendaHour: (j['daily_agenda_hour'] as num?)?.toInt() ?? 7,
-        excludedCalendars:
-            (j['excluded'] as List? ?? []).cast<String>().toSet(),
+        enabled: jBool(j['enabled'], false),
+        host: jStr(j['host']),
+        port: jInt(j['port'], 587),
+        ssl: jBool(j['ssl'], false),
+        username: jStr(j['username']),
+        from: jStr(j['from']),
+        to: jStr(j['to']),
+        dailyAgenda: jBool(j['daily_agenda'], false),
+        dailyAgendaHour: jInt(j['daily_agenda_hour'], 7).clamp(0, 23),
+        excludedCalendars: jStrings(j['excluded']).toSet(),
+        extra: unknownFields(j, _known),
       );
 }

@@ -6,10 +6,15 @@ import 'calendars_screen.dart';
 import 'format.dart';
 import 'theme.dart';
 
-/// Öffnet den Editor. [multiDays]: gleicher Termin an mehreren Tagen
-/// (Mehrfachauswahl im Monat, z. B. Schichten).
+/// Öffnet den Editor. [initialRange]: Zeitraum (Ende inklusive) aus der
+/// Ziehen-Auswahl im Monat – wird ein ganztägiger, mehrtägiger Termin.
+/// [multiDays]: gleicher Termin an mehreren einzelnen Tagen.
 Future<void> openEventEditor(BuildContext context, AppState state,
-    {CalendarEvent? event, bool isNew = false, DateTime? initialDay, List<DateTime>? multiDays}) {
+    {CalendarEvent? event,
+    bool isNew = false,
+    DateTime? initialDay,
+    (DateTime, DateTime)? initialRange,
+    List<DateTime>? multiDays}) {
   if (state.calendars.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Lege zuerst unter Einstellungen → Kalender einen Kalender an.')));
@@ -19,7 +24,7 @@ Future<void> openEventEditor(BuildContext context, AppState state,
     fullscreenDialog: true,
     builder: (_) => EventEditor(
         state: state, event: event, isNew: isNew || event == null,
-        initialDay: initialDay, multiDays: multiDays),
+        initialDay: initialDay, initialRange: initialRange, multiDays: multiDays),
   ));
 }
 
@@ -30,6 +35,7 @@ class EventEditor extends StatefulWidget {
     this.event,
     required this.isNew,
     this.initialDay,
+    this.initialRange,
     this.multiDays,
   });
 
@@ -37,6 +43,7 @@ class EventEditor extends StatefulWidget {
   final CalendarEvent? event;
   final bool isNew;
   final DateTime? initialDay;
+  final (DateTime, DateTime)? initialRange;
   final List<DateTime>? multiDays;
 
   @override
@@ -88,12 +95,20 @@ class _EventEditorState extends State<EventEditor> {
       _location = TextEditingController();
       _description = TextEditingController();
       _birthYear = TextEditingController();
-      final day = dateOnly(widget.multiDays?.first ?? widget.initialDay ?? DateTime.now());
+      final range = widget.initialRange;
+      final day = dateOnly(
+          widget.multiDays?.first ?? range?.$1 ?? widget.initialDay ?? DateTime.now());
       final now = DateTime.now();
       final hour = sameDay(day, now) ? (now.hour + 1).clamp(8, 22) : 10;
       _start = DateTime(day.year, day.month, day.day, hour);
       _end = _start.add(const Duration(hours: 1));
       _allDay = false;
+      if (range != null && dateOnly(range.$2).isAfter(dateOnly(range.$1))) {
+        // Mehrere Tage gezogen: ein ganztägiger Termin über den Zeitraum
+        _allDay = true;
+        _start = dateOnly(range.$1);
+        _end = dateOnly(range.$2);
+      }
       _reminders = List.of(_cal.defaultReminders);
       _applyCalendarKind();
     }
@@ -279,6 +294,11 @@ class _EventEditorState extends State<EventEditor> {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.repeat),
               title: Text(_recurrence == null ? 'Wiederholt sich nicht' : recurrenceText(_recurrence!, _start)),
+              // Regel einer neueren App-Version: bleibt erhalten, solange hier
+              // keine eigene Wiederholung festgelegt wird.
+              subtitle: _recurrence == null && widget.event?.extra['recurrence'] != null
+                  ? const Text('Wiederholung aus einer neueren App-Version – bleibt erhalten')
+                  : null,
               trailing: const Icon(Icons.chevron_right),
               onTap: _editRecurrence,
             ),

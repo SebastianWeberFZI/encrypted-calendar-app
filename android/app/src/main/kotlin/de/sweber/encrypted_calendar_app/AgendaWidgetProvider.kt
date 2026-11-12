@@ -17,7 +17,7 @@ class AgendaWidgetProvider : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.widget_agenda)
             val snap = WidgetData.load(context)
             views.setTextViewText(R.id.agenda_title,
-                "${WidgetData.weekdays[today.dayOfWeek.value - 1]}, ${today.dayOfMonth}. ${WidgetData.months[today.monthValue - 1]}")
+                "${WidgetData.weekdaysShort[today.dayOfWeek.value - 1]}., ${today.dayOfMonth}. ${WidgetData.months[today.monthValue - 1]}")
             views.setInt(R.id.agenda_title, "setTextColor", snap.theme)
             val svc = Intent(context, AgendaWidgetService::class.java).apply {
                 putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
@@ -25,23 +25,29 @@ class AgendaWidgetProvider : AppWidgetProvider() {
             }
             views.setRemoteAdapter(R.id.agenda_list, svc)
             views.setEmptyView(R.id.agenda_list, R.id.agenda_empty)
+            // Vorlage ohne URI: jeder Eintrag liefert sein Datum per Fill-in-Intent
             views.setPendingIntentTemplate(R.id.agenda_list,
-                WidgetData.launchIntent(context, "kalender://day", 400 + id, mutable = true))
+                WidgetData.launchIntent(context, null, id * 16 + 4, mutable = true))
             views.setOnClickPendingIntent(R.id.agenda_title,
-                WidgetData.launchIntent(context, "kalender://day?date=$today", 500 + id))
+                WidgetData.launchIntent(context, "kalender://day?date=$today", id * 16 + 5))
             views.setOnClickPendingIntent(R.id.agenda_add,
-                WidgetData.launchIntent(context, "kalender://new?date=$today", 600 + id))
+                WidgetData.launchIntent(context, "kalender://new?date=$today", id * 16 + 6))
+            views.setOnClickPendingIntent(R.id.agenda_settings, WidgetData.configIntent(context, id))
             manager.updateAppWidget(id, views)
         }
         manager.notifyAppWidgetViewDataChanged(ids, R.id.agenda_list)
     }
+
+    override fun onDeleted(context: Context, ids: IntArray) = WidgetPrefs.remove(context, ids)
 }
 
 class AgendaWidgetService : RemoteViewsService() {
-    override fun onGetViewFactory(intent: Intent): RemoteViewsFactory = AgendaFactory(applicationContext)
+    override fun onGetViewFactory(intent: Intent): RemoteViewsFactory =
+        AgendaFactory(applicationContext, intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, 0))
 }
 
-private class AgendaFactory(private val context: Context) : RemoteViewsService.RemoteViewsFactory {
+private class AgendaFactory(private val context: Context, private val widgetId: Int) :
+    RemoteViewsService.RemoteViewsFactory {
     private sealed class Row {
         data class Header(val day: LocalDate, val holiday: Boolean) : Row()
         data class Event(val day: LocalDate, val ev: WidgetEvent) : Row()
@@ -53,7 +59,7 @@ private class AgendaFactory(private val context: Context) : RemoteViewsService.R
     override fun onDestroy() {}
 
     override fun onDataSetChanged() {
-        val snap = WidgetData.load(context)
+        val snap = WidgetData.load(context).forWidget(context, widgetId)
         val today = LocalDate.now()
         val out = ArrayList<Row>()
         for (i in 0 until 30) {

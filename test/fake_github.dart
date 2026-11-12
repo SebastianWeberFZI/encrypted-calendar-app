@@ -10,6 +10,7 @@ class FakeGithub {
   final Map<String, Uint8List> files = {};
   final Map<String, Uint8List> blobs = {};
   int writes = 0;
+  int blobReads = 0;
 
   static String blobSha(List<int> data) =>
       sha1.convert([...utf8.encode('blob ${data.length}\u0000'), ...data]).toString();
@@ -30,6 +31,7 @@ class FakeGithub {
         }
         if (rest.startsWith('/git/blobs/')) {
           final sha = rest.substring('/git/blobs/'.length);
+          blobReads++;
           final b = blobs[sha];
           if (b == null) return _json(404, {'message': 'Not Found'});
           return _json(200, {'sha': sha, 'content': base64Encode(b)});

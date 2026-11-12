@@ -10,6 +10,28 @@ import 'github_api.dart';
 const String kMetaPath = 'meta.json';
 const String kKeyCheckPath = 'keycheck.enc';
 
+/// Datenformat-Generation des Repos (`schema` in meta.json), die diese App
+/// sicher lesen und schreiben kann.
+///
+/// Kompatibilitätsregeln:
+/// * Neue Felder in Dokumenten sind additiv – ältere Apps lassen sie beim
+///   Speichern unangetastet (siehe `extra` in den Modellen). Dafür wird die
+///   Generation NICHT erhöht.
+/// * Nur ein echter Bruch (den ältere Apps beim Schreiben beschädigen würden)
+///   erhöht die Generation. Ältere Apps synchronisieren dann nicht mehr,
+///   behalten ihre lokalen Änderungen und bitten um ein Update.
+const int kSupportedRepoSchema = 1;
+
+/// Das Daten-Repo wurde von einer neueren App-Version umgestellt.
+class RepoTooNewException implements Exception {
+  const RepoTooNewException();
+  String get message => 'Die Daten wurden mit einer neueren App-Version '
+      'gespeichert. Bitte die App aktualisieren – lokale Änderungen bleiben '
+      'bis dahin erhalten.';
+  @override
+  String toString() => message;
+}
+
 /// Eine beim Sync übernommene fremde Änderung (für Benachrichtigungen).
 class RemoteChange {
   const RemoteChange(this.path, this.before, this.after);
@@ -25,6 +47,10 @@ class SyncResult {
 
   /// Beim Pull übersprungene, nicht entschlüsselbare Dateien.
   int skipped = 0;
+
+  /// Dateien im Format einer neueren App-Version, die diese App noch nicht
+  /// lesen kann (Stand nach dem Abgleich, nicht nur neu hinzugekommene).
+  int newer = 0;
   final List<RemoteChange> changes = [];
 
   @override
@@ -38,9 +64,11 @@ class SyncResult {
 typedef ConflictHandler = Future<void> Function(
     String path, Map<String, dynamic> loser, Map<String, dynamic> winner);
 
-DateTime docUpdatedAt(Map<String, dynamic> doc) =>
-    DateTime.tryParse(doc['updated_at'] as String? ?? '') ??
-    DateTime.fromMillisecondsSinceEpoch(0);
+DateTime docUpdatedAt(Map<String, dynamic> doc) {
+  final v = doc['updated_at'];
+  return (v is String ? DateTime.tryParse(v) : null) ??
+      DateTime.fromMillisecondsSinceEpoch(0);
+}
 
 /// Synchronisiert einen [DocStore] mit dem GitHub-Repo.
 ///
@@ -82,6 +110,14 @@ class SyncEngine {
     await raf.lock(FileLock.blockingExclusive);
     try {
       final result = SyncResult();
+      // Repo von einer neueren App umgestellt: nichts schreiben, nichts laden.
+      // Nur meta.json wird (bei Änderung) erneut geprüft – ein Request.
+      if (store.repoSchema > kSupportedRepoSchema) {
+        await _checkMeta((await api.getTree()).files[kMetaPath]);
+        if (store.repoSchema > kSupportedRepoSchema) {
+          throw const RepoTooNewException();
+        }
+      }
       for (var round = 0; round < 3 && store.pending.isNotEmpty; round++) {
         await _push(result);
       }
@@ -138,8 +174,16 @@ class SyncEngine {
     }
     Map<String, dynamic> remote;
     try {
-      remote = ((await crypto.decryptJson(remoteFile.content!, key)) as Map)
-          .cast<String, dynamic>();
+      remote = await crypto.decryptDoc(remoteFile.content!, key);
+    } on UnsupportedFormatException {
+      // Neuere App hat die Datei in einem neuen Format gespeichert: nicht
+      // überschreiben. Die veraltete lokale Fassung tritt zurück.
+      store.markSynced(op);
+      await store.delete(op.path, fromRemote: true, persistState: false);
+      store.unreadable[op.path] = remoteFile.sha;
+      store.newer[op.path] = remoteFile.sha;
+      result.skipped++;
+      return;
     } on DecryptionFailedException {
       // Unlesbare Remote-Fassung: mit der lokalen überschreiben.
       final newSha = await api.putFile(op.path, bytes, commitMessage,
@@ -183,14 +227,14 @@ class SyncEngine {
       store.markSynced(op);
       if (remoteFile == null) return;
       try {
-        final remote =
-            ((await crypto.decryptJson(remoteFile.content!, key)) as Map)
-                .cast<String, dynamic>();
+        final remote = await crypto.decryptDoc(remoteFile.content!, key);
         store.remoteShas[op.path] = remoteFile.sha;
         await store.put(op.path, remote, fromRemote: true);
         result.conflicts++;
         result.changes.add(RemoteChange(op.path, null, remote));
-      } on DecryptionFailedException {
+      } on DecryptionFailedException catch (e) {
+        store.unreadable[op.path] = remoteFile.sha;
+        if (e is UnsupportedFormatException) store.newer[op.path] = remoteFile.sha;
         result.skipped++;
       }
     }
@@ -201,14 +245,19 @@ class SyncEngine {
 
   Future<void> _pull(SyncResult result) async {
     final tree = await api.getTree();
+    await _checkMeta(tree.files[kMetaPath]);
     final remote = {
       for (final e in tree.files.entries)
         if (_managed(e.key)) e.key: e.value,
     };
+    store.unreadable.removeWhere((p, sha) => remote[p] != sha);
+    store.newer.removeWhere((p, sha) => remote[p] != sha);
 
     final toFetch = [
       for (final e in remote.entries)
-        if (!store.hasPendingFor(e.key) && store.remoteShas[e.key] != e.value)
+        if (!store.hasPendingFor(e.key) &&
+            store.remoteShas[e.key] != e.value &&
+            store.unreadable[e.key] != e.value)
           e,
     ];
     const batch = 6;
@@ -217,16 +266,24 @@ class SyncEngine {
       await Future.wait(chunk.map((e) async {
         final bytes = await api.getBlob(e.value);
         try {
-          final doc = ((await crypto.decryptJson(bytes, key)) as Map)
-              .cast<String, dynamic>();
+          final doc = await crypto.decryptDoc(bytes, key);
           final before = store.get(e.key);
           store.remoteShas[e.key] = e.value;
           await store.put(e.key, doc, fromRemote: true, persistState: false);
           result.pulled++;
           result.changes.add(RemoteChange(e.key, before, doc));
-        } on DecryptionFailedException {
+        } on UnsupportedFormatException {
+          // Von einer neueren App-Version: die veraltete lokale Kopie
+          // ausblenden, damit sie nicht versehentlich zurückgeschrieben wird.
+          if (store.get(e.key) != null) {
+            await store.delete(e.key, fromRemote: true, persistState: false);
+          }
+          store.unreadable[e.key] = e.value;
+          store.newer[e.key] = e.value;
           result.skipped++;
-        } on FormatException {
+        } catch (_) {
+          // Beschädigt: überspringen, die letzte lesbare Fassung bleibt.
+          store.unreadable[e.key] = e.value;
           result.skipped++;
         }
       }));
@@ -245,17 +302,57 @@ class SyncEngine {
       result.changes.add(RemoteChange(path, before, null));
     }
     store.lastTreeSha = tree.sha;
+    result.newer = store.newer.length;
+  }
+
+  /// Prüft meta.json, wenn sie sich geändert hat (ein Request pro Änderung,
+  /// sonst keiner).
+  Future<void> _checkMeta(String? sha) async {
+    if (sha == null || sha == store.metaSha) return;
+    final file = await api.getFile(kMetaPath);
+    if (file == null) return;
+    store.repoSchema = readRepoSchema(file.content!);
+    store.metaSha = sha;
+    if (store.repoSchema > kSupportedRepoSchema) {
+      await store.saveState();
+      throw const RepoTooNewException();
+    }
+  }
+
+  /// `schema` aus meta.json (1, wenn nicht vorhanden oder unlesbar).
+  static int readRepoSchema(List<int> metaBytes) {
+    try {
+      final json = jsonDecode(utf8.decode(metaBytes));
+      final v = json is Map ? json['schema'] : null;
+      return v is num ? v.toInt() : 1;
+    } catch (_) {
+      return 1;
+    }
   }
 
   // ------------------------------------------------------------ Einrichtung
 
   /// Liest die KDF-Parameter aus meta.json; null, wenn das Repo nicht
   /// initialisiert ist.
+  ///
+  /// Wirft [RepoTooNewException], wenn eine neuere App-Version das Repo
+  /// eingerichtet oder umgestellt hat.
   static Future<CryptoParams?> fetchMeta(GithubApi api) async {
     final file = await api.getFile(kMetaPath);
     if (file == null) return null;
-    return CryptoParams.fromJson(
-        jsonDecode(utf8.decode(file.content!)) as Map<String, dynamic>);
+    if (readRepoSchema(file.content!) > kSupportedRepoSchema) {
+      throw const RepoTooNewException();
+    }
+    Object? json;
+    try {
+      json = jsonDecode(utf8.decode(file.content!));
+    } catch (_) {
+      json = null;
+    }
+    if (json is! Map) throw const FormatException('meta.json ist beschädigt');
+    final params = CryptoParams.fromJson(json.cast<String, dynamic>());
+    if (!params.isSupported) throw const RepoTooNewException();
+    return params;
   }
 
   /// Initialisiert ein leeres Daten-Repo (meta.json + Schlüsselprobe).
@@ -285,6 +382,8 @@ class SyncEngine {
     try {
       await crypto.decryptJson(probe.content!, key);
       return true;
+    } on UnsupportedFormatException {
+      throw const RepoTooNewException();
     } on DecryptionFailedException {
       return false;
     }

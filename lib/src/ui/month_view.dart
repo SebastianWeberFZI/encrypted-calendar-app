@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../models/calendar_models.dart';
@@ -70,30 +71,35 @@ class _MonthViewState extends State<MonthView> {
         }
       });
     }
-    final showPanel = nav.panelOpen && nav.selected != null && !nav.multiSelect;
-    return Column(children: [
-      const _WeekdayHeader(),
-      Expanded(
-        child: LayoutBuilder(builder: (context, c) {
-          final gridH = showPanel ? c.maxHeight * 0.56 : c.maxHeight;
-          return Column(children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutCubic,
-              height: gridH,
-              child: PageView.builder(
-                controller: _pc,
-                onPageChanged: _onPage,
-                itemBuilder: (context, p) =>
-                    MonthGrid(month: _monthFor(p), state: widget.state, nav: nav),
+    final showPanel = nav.panelOpen && nav.selected != null;
+    // Die Zeitraum-Anzeige schwebt über dem Raster: Während des Ziehens darf
+    // sich das Layout nicht verschieben, sonst passen die Koordinaten nicht mehr.
+    return Stack(children: [
+      Column(children: [
+        const _WeekdayHeader(),
+        Expanded(
+          child: LayoutBuilder(builder: (context, c) {
+            final gridH = showPanel ? c.maxHeight * 0.56 : c.maxHeight;
+            return Column(children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                height: gridH,
+                child: PageView.builder(
+                  controller: _pc,
+                  onPageChanged: _onPage,
+                  itemBuilder: (context, p) =>
+                      MonthGrid(month: _monthFor(p), state: widget.state, nav: nav),
+                ),
               ),
-            ),
-            if (showPanel)
-              Expanded(child: DayPanel(day: nav.selected!, state: widget.state, nav: nav)),
-          ]);
-        }),
-      ),
-      if (nav.multiSelect) _MultiSelectBar(state: widget.state, nav: nav),
+              if (showPanel)
+                Expanded(child: DayPanel(day: nav.selected!, state: widget.state, nav: nav)),
+            ]);
+          }),
+        ),
+      ]),
+      if (nav.rangeActive)
+        Positioned(left: 0, right: 0, top: 26, child: Center(child: _RangeChip(nav: nav))),
     ]);
   }
 }
@@ -147,22 +153,47 @@ class MonthGrid extends StatelessWidget {
       final rowH = c.maxHeight / weeks;
       final cellW = c.maxWidth / 7;
       final maxSlots = max(0, ((rowH - numberH - 2) / slotH).floor());
-      return Column(children: [
-        for (var w = 0; w < weeks; w++)
-          SizedBox(
-            height: rowH,
-            child: _WeekRow(
-              weekStart: DateTime(gridStart.year, gridStart.month, gridStart.day + w * 7),
-              month: month,
-              occ: occ,
-              holidays: holidays,
-              cellW: cellW,
-              maxSlots: maxSlots,
-              state: state,
-              nav: nav,
+      DateTime dayAt(Offset p) {
+        final row = (p.dy / rowH).floor().clamp(0, weeks - 1);
+        final col = (p.dx / cellW).floor().clamp(0, 6);
+        return DateTime(gridStart.year, gridStart.month, gridStart.day + row * 7 + col);
+      }
+
+      // Gedrückt halten = Beginn, ziehen = Ende, loslassen = ein Termin über
+      // den ganzen Zeitraum (mehrtägig statt vieler Einzeltermine).
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onLongPressStart: (d) {
+          HapticFeedback.mediumImpact();
+          nav.startRange(dayAt(d.localPosition));
+        },
+        onLongPressMoveUpdate: (d) {
+          if (nav.updateRange(dayAt(d.localPosition))) HapticFeedback.selectionClick();
+        },
+        onLongPressEnd: (_) async {
+          final r = nav.finishRange();
+          if (r != null) await openEventEditor(context, state, initialRange: r);
+        },
+        onLongPressCancel: () {
+          if (nav.rangeActive) nav.finishRange();
+        },
+        child: Column(children: [
+          for (var w = 0; w < weeks; w++)
+            SizedBox(
+              height: rowH,
+              child: _WeekRow(
+                weekStart: DateTime(gridStart.year, gridStart.month, gridStart.day + w * 7),
+                month: month,
+                occ: occ,
+                holidays: holidays,
+                cellW: cellW,
+                maxSlots: maxSlots,
+                state: state,
+                nav: nav,
+              ),
             ),
-          ),
-      ]);
+        ]),
+      );
     });
   }
 }
@@ -258,8 +289,8 @@ class _DayCell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final selected = nav.selected == day && !nav.multiSelect;
-    final multi = nav.multi.contains(day);
+    final selected = nav.selected == day && !nav.rangeActive;
+    final inRange = nav.inRange(day);
     var numColor = col == 6 || holiday
         ? kSundayColor
         : col == 5
@@ -269,15 +300,12 @@ class _DayCell extends StatelessWidget {
     return Expanded(
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: () => nav.multiSelect ? nav.toggleMulti(day) : nav.select(day),
-        onDoubleTap: nav.multiSelect
-            ? null
-            : () => openEventEditor(context, state, initialDay: day),
-        onLongPress: () => nav.toggleMulti(day),
+        onTap: () => nav.select(day),
+        onDoubleTap: () => openEventEditor(context, state, initialDay: day),
         child: Container(
           decoration: BoxDecoration(
-            color: multi
-                ? scheme.primary.withValues(alpha: 0.18)
+            color: inRange
+                ? scheme.primary.withValues(alpha: 0.2)
                 : selected
                     ? scheme.primary.withValues(alpha: 0.07)
                     : inMonth
@@ -413,7 +441,7 @@ class DayPanel extends StatelessWidget {
           Expanded(
             child: occ.isEmpty
                 ? Center(
-                    child: Text('Keine Termine.\nDoppelt tippen auf einen Tag legt einen an.',
+                    child: Text('Keine Termine.\nDoppelt tippen legt einen an, gedrückt halten\nund ziehen einen mehrtägigen.',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodyMedium
                             ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
@@ -429,37 +457,30 @@ class DayPanel extends StatelessWidget {
   }
 }
 
-class _MultiSelectBar extends StatelessWidget {
-  const _MultiSelectBar({required this.state, required this.nav});
-  final AppState state;
+/// Schwebende Anzeige des Zeitraums während des Ziehens.
+class _RangeChip extends StatelessWidget {
+  const _RangeChip({required this.nav});
   final CalendarNav nav;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final n = nav.multi.length;
-    return Material(
-      color: theme.colorScheme.primaryContainer,
-      child: SafeArea(
-        top: false,
+    final r = nav.range!;
+    final days = r.$2.difference(r.$1).inDays + 1;
+    final text = days == 1
+        ? fmtDateShort(r.$1)
+        : r.$1.month == r.$2.month && r.$1.year == r.$2.year
+            ? '${r.$1.day}.–${fmtDateShort(r.$2)}'
+            : '${fmtDateShort(r.$1)} – ${fmtDateShort(r.$2)}';
+    return IgnorePointer(
+      child: Material(
+        elevation: 4,
+        color: theme.colorScheme.primary,
+        borderRadius: BorderRadius.circular(20),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
-          child: Row(children: [
-            Expanded(
-              child: Text('$n Tag${n == 1 ? '' : 'e'} ausgewählt',
-                  style: theme.textTheme.titleSmall),
-            ),
-            TextButton(onPressed: nav.clearMulti, child: const Text('Abbrechen')),
-            FilledButton.icon(
-              icon: const Icon(Icons.add),
-              label: const Text('Termin für alle'),
-              onPressed: () async {
-                final days = nav.multi.toList()..sort();
-                await openEventEditor(context, state, multiDays: days);
-                nav.clearMulti();
-              },
-            ),
-          ]),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+          child: Text('$text · $days Tag${days == 1 ? '' : 'e'}',
+              style: theme.textTheme.labelLarge?.copyWith(color: theme.colorScheme.onPrimary)),
         ),
       ),
     );

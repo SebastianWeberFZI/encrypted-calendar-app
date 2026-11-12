@@ -16,6 +16,9 @@ class CryptoParams {
     this.version = 1,
   });
 
+  /// Höchste KDF-Parameter-Version, die diese App kennt.
+  static const int supportedVersion = 1;
+
   /// Base64-kodiertes Salt (16 Byte).
   final String salt;
   final String kdf;
@@ -23,6 +26,11 @@ class CryptoParams {
   final int iterations;
   final int parallelism;
   final int version;
+
+  /// false, wenn eine neuere App-Version das Repo mit einem Verfahren
+  /// eingerichtet hat, das diese App nicht kennt.
+  bool get isSupported =>
+      kdf == 'argon2id' && version <= supportedVersion && salt.isNotEmpty;
 
   Map<String, dynamic> toJson() => {
         'version': version,
@@ -33,14 +41,23 @@ class CryptoParams {
         'parallelism': parallelism,
       };
 
-  factory CryptoParams.fromJson(Map<String, dynamic> json) => CryptoParams(
-        salt: json['salt'] as String,
-        kdf: json['kdf'] as String? ?? 'argon2id',
-        memoryKiB: (json['memory_kib'] as num?)?.toInt() ?? 65536,
-        iterations: (json['iterations'] as num?)?.toInt() ?? 3,
-        parallelism: (json['parallelism'] as num?)?.toInt() ?? 2,
-        version: (json['version'] as num?)?.toInt() ?? 1,
-      );
+  factory CryptoParams.fromJson(Map<String, dynamic> json) {
+    int n(String k, int d) {
+      final v = json[k];
+      return v is num ? v.toInt() : d;
+    }
+
+    final salt = json['salt'];
+    final kdf = json['kdf'];
+    return CryptoParams(
+      salt: salt is String ? salt : '',
+      kdf: kdf is String ? kdf : 'argon2id',
+      memoryKiB: n('memory_kib', 65536),
+      iterations: n('iterations', 3),
+      parallelism: n('parallelism', 2),
+      version: n('version', 1),
+    );
+  }
 
   factory CryptoParams.generate() {
     final rng = Random.secure();
@@ -55,6 +72,16 @@ class DecryptionFailedException implements Exception {
   @override
   String toString() =>
       'Entschlüsselung fehlgeschlagen (falsche Passphrase oder beschädigte Daten)';
+}
+
+/// Das Dokument wurde von einer neueren App-Version in einem Format
+/// verschlüsselt, das diese Version noch nicht kennt. Es darf weder gelesen
+/// noch überschrieben werden.
+class UnsupportedFormatException extends DecryptionFailedException {
+  const UnsupportedFormatException();
+  @override
+  String toString() =>
+      'Format einer neueren App-Version – bitte die App aktualisieren';
 }
 
 /// AES-256-GCM pro Dokument, Master-Key aus Passphrase via Argon2id.
@@ -91,18 +118,23 @@ class CryptoService {
   }
 
   Future<Uint8List> decryptBytes(List<int> data, SecretKey key) async {
-    if (data.isEmpty || data[0] != _formatVersion) {
+    if (data.isEmpty) throw const DecryptionFailedException();
+    if (data[0] > _formatVersion) throw const UnsupportedFormatException();
+    if (data[0] != _formatVersion ||
+        data.length < 1 + _nonceLength + _macLength) {
       throw const DecryptionFailedException();
     }
-    final box = SecretBox.fromConcatenation(
-      data.sublist(1),
-      nonceLength: _nonceLength,
-      macLength: _macLength,
-    );
     try {
+      final box = SecretBox.fromConcatenation(
+        data.sublist(1),
+        nonceLength: _nonceLength,
+        macLength: _macLength,
+      );
       final clear = await _aes.decrypt(box, secretKey: key);
       return Uint8List.fromList(clear);
     } on SecretBoxAuthenticationError {
+      throw const DecryptionFailedException();
+    } on ArgumentError {
       throw const DecryptionFailedException();
     }
   }
@@ -110,8 +142,23 @@ class CryptoService {
   Future<Uint8List> encryptJson(Object json, SecretKey key) =>
       encryptBytes(utf8.encode(jsonEncode(json)), key);
 
-  Future<dynamic> decryptJson(List<int> data, SecretKey key) async =>
-      jsonDecode(utf8.decode(await decryptBytes(data, key)));
+  /// Entschlüsselt ein JSON-Dokument. Nicht lesbarer Inhalt (kein gültiges
+  /// UTF-8/JSON) gilt als beschädigt: [DecryptionFailedException].
+  Future<dynamic> decryptJson(List<int> data, SecretKey key) async {
+    final bytes = await decryptBytes(data, key);
+    try {
+      return jsonDecode(utf8.decode(bytes));
+    } on FormatException {
+      throw const DecryptionFailedException();
+    }
+  }
+
+  /// Wie [decryptJson], verlangt aber ein JSON-Objekt.
+  Future<Map<String, dynamic>> decryptDoc(List<int> data, SecretKey key) async {
+    final json = await decryptJson(data, key);
+    if (json is! Map) throw const DecryptionFailedException();
+    return json.cast<String, dynamic>();
+  }
 
   /// Deterministische, nicht umkehrbare ID (HMAC-SHA256, 32 Hex-Zeichen).
   /// Gleiche Eingabe + gleicher Schlüssel = gleiche ID auf allen Geräten,

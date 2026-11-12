@@ -36,22 +36,34 @@ class WidgetService {
     final now = DateTime.now();
     final today = dateOnly(now);
     final weekStart = today.subtract(Duration(days: today.weekday - 1));
-    final to = weekStart.add(const Duration(days: 49));
-    final keys = settings.widgetCalendars ??
+    // Das Monats-Widget scrollt ein halbes Jahr weit.
+    final to = weekStart.add(const Duration(days: 7 * 26));
+    // Alle Kalender liefern – welche ein Widget zeigt, entscheidet es selbst
+    // (eigene Auswahl je Widget, sonst diese Standardauswahl).
+    final defaultKeys = settings.widgetCalendars ??
         {
           for (final c in repo.calendars)
             if (!settings.hiddenCalendars.contains(c.key)) c.key
         };
+    final sourceLabels = {for (final s in repo.sources) s.id: s.config.label};
     final occ = repo.occurrences(weekStart, to,
-        calendarKeys: keys,
-        holidayState:
-            settings.showHolidays && settings.widgetShowHolidays
-                ? settings.holidayState
-                : null);
+        calendarKeys: {for (final c in repo.calendars) c.key},
+        holidayState: settings.holidayState);
     final data = {
-      'generated': now.toIso8601String(),
       'week_start': isoDate(weekStart),
       'theme': settings.themeColor,
+      'default_keys': defaultKeys.toList(),
+      'default_holidays': settings.showHolidays && settings.widgetShowHolidays,
+      'calendars': [
+        for (final c in repo.calendars)
+          {
+            'k': c.key,
+            'n': c.name,
+            'c': c.color,
+            'e': c.emoji,
+            's': sourceLabels[c.sourceId] ?? '',
+          }
+      ],
       'events': [
         for (final o in occ)
           {
@@ -65,11 +77,17 @@ class WidgetService {
                 '${o.end.minute.toString().padLeft(2, '0')}',
             'hol': o.holiday,
             'loc': o.event?.location ?? '',
+            'k': o.calendar?.key ?? '',
           }
       ],
     };
     try {
-      await HomeWidget.saveWidgetData<String>('calendar_data', jsonEncode(data));
+      // Energie sparen: Widgets nur neu zeichnen, wenn sich ihre Daten geändert
+      // haben (sonst würde jeder Abgleich – bei offener App minütlich – sie anstoßen).
+      final encoded = jsonEncode(data);
+      final previous = await HomeWidget.getWidgetData<String>('calendar_data');
+      if (encoded == previous) return;
+      await HomeWidget.saveWidgetData<String>('calendar_data', encoded);
       await HomeWidget.updateWidget(qualifiedAndroidName: monthProvider);
       await HomeWidget.updateWidget(qualifiedAndroidName: agendaProvider);
     } catch (_) {

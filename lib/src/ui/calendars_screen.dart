@@ -141,7 +141,12 @@ class _CalendarEditorState extends State<CalendarEditor> {
       ..defaultReminders = _reminders
       ..colorLabels = [
         for (final r in _labels)
-          if (r.text.text.trim().isNotEmpty) ColorLabel(color: r.color, label: r.text.text.trim()),
+          if (r.text.text.trim().isNotEmpty)
+            ColorLabel(
+                color: r.color,
+                label: r.text.text.trim(),
+                extra: c.colorLabels.where((l) => l.color == r.color).firstOrNull?.extra ??
+                    const {}),
       ];
     await widget.state.saveCalendar(c);
     if (mounted) Navigator.pop(context);

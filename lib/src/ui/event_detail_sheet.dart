@@ -68,7 +68,10 @@ class EventDetailSheet extends StatelessWidget {
             const SizedBox(height: 8),
             row(Icons.schedule, Text(when, style: theme.textTheme.bodyLarge)),
             if (e.recurrence != null)
-              row(Icons.repeat, Text(recurrenceText(e.recurrence!, e.start))),
+              row(Icons.repeat, Text(recurrenceText(e.recurrence!, e.start)))
+            else if (e.extra['recurrence'] != null)
+              row(Icons.repeat,
+                  const Text('Wiederholt sich (neuere App-Version) – hier nur einmal angezeigt')),
             if (occ.colorLabel != null)
               row(Icons.palette_outlined, Row(children: [
                 Container(width: 12, height: 12, margin: const EdgeInsets.only(right: 8),

@@ -51,7 +51,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _handleWidgetUri(Uri? uri) {
-    if (uri == null) return;
+    if (uri == null || !mounted) return;
+    // Aus dem Widget kommend: offene Seiten (Einstellungen, Editor …) schließen,
+    // damit der gewählte Tag bzw. der neue Termin auch zu sehen ist.
+    Navigator.of(context).popUntil((r) => r.isFirst);
     final d = DateTime.tryParse(uri.queryParameters['date'] ?? '');
     if (d != null) {
       nav.jumpTo(d);
@@ -124,7 +127,9 @@ class _HomeScreenState extends State<HomeScreen> {
             if (state.lastSyncMessage != null)
               MaterialBanner(
                 content: Text(state.lastSyncMessage!),
-                leading: const Icon(Icons.cloud_off_outlined),
+                leading: Icon(state.lastSyncNeedsUpdate
+                    ? Icons.system_update_alt
+                    : Icons.cloud_off_outlined),
                 backgroundColor: theme.colorScheme.errorContainer.withValues(alpha: 0.5),
                 actions: [TextButton(onPressed: () => state.syncNow(), child: const Text('Erneut'))],
               ),
@@ -136,16 +141,12 @@ class _HomeScreenState extends State<HomeScreen> {
               },
             ),
           ]),
-          floatingActionButton: nav.multiSelect
-              ? null
-              : FloatingActionButton(
-                  tooltip: 'Neuer Termin',
-                  onPressed: () => openEventEditor(context, state, initialDay: nav.selected ?? today),
-                  child: const Icon(Icons.add),
-                ),
-          bottomNavigationBar: nav.multiSelect
-              ? null
-              : NavigationBar(
+          floatingActionButton: FloatingActionButton(
+            tooltip: 'Neuer Termin',
+            onPressed: () => openEventEditor(context, state, initialDay: nav.selected ?? today),
+            child: const Icon(Icons.add),
+          ),
+          bottomNavigationBar: NavigationBar(
                   height: 64,
                   selectedIndex: mode.index,
                   labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,

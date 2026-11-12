@@ -22,7 +22,8 @@ class SourceConfig {
     required this.masterKeyB64,
     required this.cryptoParams,
     this.rememberKey = true,
-  });
+    Map<String, dynamic>? extra,
+  }) : extra = extra ?? {};
 
   /// Lokale ID (Ordnername der lokalen Kopie).
   final String id;
@@ -40,12 +41,16 @@ class SourceConfig {
   final CryptoParams cryptoParams;
   bool rememberKey;
 
+  /// Felder einer anderen App-Version – bleiben beim Speichern erhalten.
+  final Map<String, dynamic> extra;
+
   GithubConfig get github => GithubConfig(
       owner: owner, repo: repo, branch: branch, token: token, apiBase: apiBase);
 
   bool get isMock => apiBase != kGithubApiBase;
 
   Map<String, dynamic> toJson() => {
+        ...extra,
         'id': id,
         'label': label,
         'owner': owner,
@@ -58,19 +63,33 @@ class SourceConfig {
         'remember_key': rememberKey,
       };
 
-  factory SourceConfig.fromJson(Map<String, dynamic> j) => SourceConfig(
-        id: j['id'] as String,
-        label: j['label'] as String? ?? j['repo'] as String,
-        owner: j['owner'] as String,
-        repo: j['repo'] as String,
-        branch: j['branch'] as String? ?? 'main',
-        token: j['token'] as String,
-        apiBase: j['api_base'] as String? ?? kGithubApiBase,
-        masterKeyB64: j['master_key'] as String? ?? '',
-        cryptoParams: CryptoParams.fromJson(
-            (j['crypto_params'] as Map).cast<String, dynamic>()),
-        rememberKey: j['remember_key'] as bool? ?? true,
-      );
+  static const _known = {
+    'id', 'label', 'owner', 'repo', 'branch', 'token', 'api_base',
+    'master_key', 'crypto_params', 'remember_key',
+  };
+
+  /// Wirft bei fehlenden Pflichtfeldern (id, owner, repo, Schlüsselparameter).
+  factory SourceConfig.fromJson(Map<String, dynamic> j) {
+    String? str(String k) => j[k] is String ? j[k] as String : null;
+    final params = j['crypto_params'];
+    return SourceConfig(
+      id: str('id')!,
+      label: str('label') ?? str('repo')!,
+      owner: str('owner')!,
+      repo: str('repo')!,
+      branch: str('branch') ?? 'main',
+      token: str('token') ?? '',
+      apiBase: str('api_base') ?? kGithubApiBase,
+      masterKeyB64: str('master_key') ?? '',
+      cryptoParams:
+          CryptoParams.fromJson((params as Map).cast<String, dynamic>()),
+      rememberKey: j['remember_key'] is bool ? j['remember_key'] as bool : true,
+      extra: {
+        for (final e in j.entries)
+          if (!_known.contains(e.key)) e.key: e.value,
+      },
+    );
+  }
 }
 
 /// Persistiert die Liste der Datenquellen im Keystore.
@@ -113,16 +132,39 @@ class SourceConfigStore {
     await f.writeAsString(jsonEncode(m));
   }
 
+  /// Einträge, die diese App-Version nicht versteht (z. B. nach einem
+  /// Downgrade). Sie werden nicht angezeigt, aber auch nicht gelöscht.
+  final List<Object?> _unreadable = [];
+
   Future<List<SourceConfig>> load() async {
+    _unreadable.clear();
     final raw = await _read(_kSources);
     if (raw == null || raw.isEmpty) return [];
-    return (jsonDecode(raw) as List)
-        .map((e) => SourceConfig.fromJson((e as Map).cast<String, dynamic>()))
-        .toList();
+    Object? list;
+    try {
+      list = jsonDecode(raw);
+    } on FormatException {
+      return [];
+    }
+    if (list is! List) return [];
+    final out = <SourceConfig>[];
+    for (final e in list) {
+      try {
+        out.add(SourceConfig.fromJson((e as Map).cast<String, dynamic>()));
+      } catch (_) {
+        _unreadable.add(e);
+      }
+    }
+    return out;
   }
 
-  Future<void> save(List<SourceConfig> sources) =>
-      _write(_kSources, jsonEncode(sources.map((s) => s.toJson()).toList()));
+  Future<void> save(List<SourceConfig> sources) => _write(
+      _kSources,
+      jsonEncode([
+        ...sources.map((s) => s.toJson()),
+        ..._unreadable.where((u) => !(u is Map &&
+            sources.any((s) => s.id == u['id']))),
+      ]));
 
   /// Beliebige weitere Geheimnisse (z. B. SMTP-Passwort).
   Future<String?> readSecret(String key) => _read('secret_$key');

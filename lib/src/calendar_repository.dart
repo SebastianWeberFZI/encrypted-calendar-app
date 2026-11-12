@@ -25,10 +25,17 @@ class SourceRuntime {
   final SyncEngine engine;
   bool syncing = false;
   String? error;
+
+  /// Hinweis ohne Fehlercharakter (z. B. Daten einer neueren App-Version).
+  String? notice;
   SyncResult? lastResult;
 
   String get id => config.id;
 }
+
+/// Hinweis, wenn Einträge im Format einer neueren App-Version vorliegen.
+const String kNewerDataHint = 'Einige Einträge stammen von einer neueren '
+    'App-Version und erscheinen erst nach einem Update.';
 
 class SetupException implements Exception {
   const SetupException(this.message);
@@ -126,8 +133,9 @@ class CalendarRepository {
     _calendars = [
       for (final s in sources)
         for (final e in s.store.inDir('calendars'))
-          CalendarDef.fromJson(e.value, s.id),
-    ]..sort((a, b) {
+          _tryCalendar(e.key, e.value, s.id),
+    ].whereType<CalendarDef>().toList()
+      ..sort((a, b) {
         final c = a.sortOrder.compareTo(b.sortOrder);
         return c != 0 ? c : a.name.toLowerCase().compareTo(b.name.toLowerCase());
       });
@@ -135,14 +143,24 @@ class CalendarRepository {
     _events = [
       for (final s in sources)
         for (final e in s.store.inDir('events'))
-          _tryEvent(e.value, s.id),
+          _tryEvent(e.key, e.value, s.id),
     ].whereType<CalendarEvent>().where((e) => known.contains(e.calendarKey)).toList();
     _cacheVersion = _version;
   }
 
-  CalendarEvent? _tryEvent(Map<String, dynamic> j, String sourceId) {
+  // Unlesbare Dokumente (beschädigt oder von einer ganz anderen App-Version)
+  // werden ausgeblendet, bleiben aber unverändert im Store und im Repo.
+  CalendarEvent? _tryEvent(String path, Map<String, dynamic> j, String sourceId) {
     try {
-      return CalendarEvent.fromJson(j, sourceId);
+      return CalendarEvent.fromJson(j, sourceId, path: path);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  CalendarDef? _tryCalendar(String path, Map<String, dynamic> j, String sourceId) {
+    try {
+      return CalendarDef.fromJson(j, sourceId, path: path);
     } catch (_) {
       return null;
     }
@@ -260,8 +278,11 @@ class CalendarRepository {
       final r = await s.engine.sync();
       s.lastResult = r;
       s.error = null;
-      if (r.pulled > 0 || r.conflicts > 0) touch();
+      s.notice = r.newer > 0 ? kNewerDataHint : null;
+      if (r.pulled > 0 || r.conflicts > 0 || r.newer > 0) touch();
       return r;
+    } on RepoTooNewException catch (e) {
+      s.error = e.message;
     } on GithubApiException catch (e) {
       s.error = e.isUnauthorized
           ? 'Token ungültig oder abgelaufen.'
@@ -321,15 +342,30 @@ class CalendarRepository {
     } catch (e) {
       throw SetupException('Keine Verbindung zu ${github.apiBase}: $e');
     }
-    var params = await SyncEngine.fetchMeta(api);
-    final isFresh = params == null;
-    params ??= CryptoParams.generate();
+    final CryptoParams? existing;
+    try {
+      existing = await SyncEngine.fetchMeta(api);
+    } on RepoTooNewException catch (e) {
+      throw SetupException(e.message);
+    } on FormatException {
+      throw const SetupException('meta.json im Repository ist beschädigt.');
+    }
+    final isFresh = existing == null;
+    final params = existing ?? CryptoParams.generate();
     final key = await crypto.deriveKey(passphrase, params);
     if (isFresh) {
       await SyncEngine.initializeRemote(api, crypto, key, params, app: kAppId);
-    } else if (!await SyncEngine.verifyKey(api, crypto, key)) {
-      throw const SetupException(
-          'Passphrase falsch – sie passt nicht zu den Daten im Repository.');
+    } else {
+      bool ok;
+      try {
+        ok = await SyncEngine.verifyKey(api, crypto, key);
+      } on RepoTooNewException catch (e) {
+        throw SetupException(e.message);
+      }
+      if (!ok) {
+        throw const SetupException(
+            'Passphrase falsch – sie passt nicht zu den Daten im Repository.');
+      }
     }
     final cfg = SourceConfig(
       id: const Uuid().v4().substring(0, 8),

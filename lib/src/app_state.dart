@@ -202,11 +202,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       final results = await repo.syncAll();
       final changes = results.fold<int>(0, (s, r) => s + r.pulled);
       final conflicts = results.fold<int>(0, (s, r) => s + r.conflicts);
+      final notices = [
+        for (final s in repo.sources)
+          if (s.notice != null) '${s.config.label}: ${s.notice}'
+      ];
       lastSyncMessage = sourceErrors.isNotEmpty
           ? sourceErrors.first
           : conflicts > 0
               ? '$conflicts Konflikt(e) – Kopien mit „(Konflikt)“ angelegt'
-              : null;
+              : notices.firstOrNull;
       if (!silent && changes == 0 && sourceErrors.isEmpty) {
         toast.value = 'Alles aktuell';
       }
@@ -221,6 +225,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
   }
+
+  /// true, wenn die Meldung um ein App-Update bittet (kein Verbindungsfehler).
+  bool get lastSyncNeedsUpdate =>
+      lastSyncMessage?.contains('neueren App-Version') ?? false;
 
   List<String> get sourceErrors => [
         for (final s in repo.sources)

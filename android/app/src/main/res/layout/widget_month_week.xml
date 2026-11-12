@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Eine Wochenzeile des Monats-Widgets: Bild (Tageszahlen + Balken), darüber 7 Tippflächen -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="58dp">
+    <ImageView
+        android:id="@+id/week_img"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:scaleType="fitXY" />
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal">
+        <FrameLayout android:id="@+id/d0" style="@style/WidgetDayTarget" />
+        <FrameLayout android:id="@+id/d1" style="@style/WidgetDayTarget" />
+        <FrameLayout android:id="@+id/d2" style="@style/WidgetDayTarget" />
+        <FrameLayout android:id="@+id/d3" style="@style/WidgetDayTarget" />
+        <FrameLayout android:id="@+id/d4" style="@style/WidgetDayTarget" />
+        <FrameLayout android:id="@+id/d5" style="@style/WidgetDayTarget" />
+        <FrameLayout android:id="@+id/d6" style="@style/WidgetDayTarget" />
+    </LinearLayout>
+</FrameLayout>

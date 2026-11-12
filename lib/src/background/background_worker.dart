@@ -64,6 +64,10 @@ Future<void> registerBackgroundWork() async {
     kPeriodicTask,
     kPeriodicTask,
     frequency: const Duration(minutes: 15),
+    // Energie sparen: nur mit Netz (ohne Netz gibt es nichts abzugleichen).
+    // „update“ übernimmt geänderte Bedingungen auch für bereits registrierte Aufgaben.
+    constraints: Constraints(networkType: NetworkType.connected),
+    existingWorkPolicy: ExistingPeriodicWorkPolicy.update,
   );
 }
 

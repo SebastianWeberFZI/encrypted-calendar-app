@@ -29,7 +29,8 @@ Beim ersten Start fragt die App nach dem privaten Daten-Repo, einem Fine-grained
 - Wiederholungen (täglich/wöchentlich an Wochentagen/monatlich/jährlich, Intervall, Ende), einzelne Vorkommen löschen
 - Feiertage je Bundesland (lokal berechnet)
 - Erinnerungen als **Push** (exakte Alarme) und/oder **E-Mail** (SMTP direkt vom Handy)
-- Startbildschirm-**Widgets**: „Monat“ (2–6 Wochen, passt sich der Größe an) und „Agenda“
+- **Mehrtägige Termine** als ein Termin mit durchgehendem Balken; anlegen per langem Drücken und Ziehen über die Tage
+- Startbildschirm-**Widgets**: „Monat“ (scrollbar, Tag antippen legt einen Termin an) und „Agenda“; Kalenderauswahl je Widget über das Zahnrad
 - Offline-First, Sync-Queue, Konflikte: jüngere Änderung gewinnt, die andere bleibt als „(Konflikt)“-Kopie
 
 ## Daten-Repo
@@ -39,6 +40,14 @@ keycheck.enc         Schlüsselprobe
 calendars/<id>.enc   Kalenderdefinitionen
 events/<id>.enc      ein Termin pro Datei
 ```
+
+## Kompatibilität zwischen App-Versionen
+Beide Handys müssen nicht gleichzeitig aktualisiert werden:
+- Ältere und neuere Dokumente werden tolerant gelesen – fehlende Felder bekommen Standardwerte, falsche Typen oder unbekannte Werte bringen die App nicht zum Absturz.
+- Felder, die eine App-Version nicht kennt, bleiben beim Speichern unverändert erhalten (eine ältere App beschneidet die Daten einer neueren nicht).
+- Dokumente in einem neueren Verschlüsselungsformat werden weder gelesen noch überschrieben; die App bittet dann um ein Update.
+- Erhöht eine neuere App die Datenformat-Generation (`schema` in `meta.json`), pausieren ältere Apps den Abgleich, behalten ihre lokalen Änderungen und bitten um ein Update.
+- Unlesbare oder beschädigte Dateien werden übersprungen und nicht bei jedem Abgleich neu geladen.
 
 ## Entwicklung
 Gebaut und getestet in der Android-Werkstatt (`../werkstatt`). Werkstatt-Builds

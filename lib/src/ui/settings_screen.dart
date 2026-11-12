@@ -135,15 +135,14 @@ class SettingsScreen extends StatelessWidget {
             header('Widgets'),
             ListTile(
               leading: const Icon(Icons.widgets_outlined),
-              title: const Text('Kalender im Widget'),
-              subtitle: Text(s.widgetCalendars == null
-                  ? 'Wie in der App sichtbar'
-                  : state.calendars.where((c) => s.widgetCalendars!.contains(c.key)).map((c) => c.name).join(', ')),
+              title: const Text('Standard-Kalender für Widgets'),
+              subtitle: Text('${s.widgetCalendars == null ? 'Wie in der App sichtbar' : state.calendars.where((c) => s.widgetCalendars!.contains(c.key)).map((c) => c.name).join(', ')}'
+                  '\nJedes Widget kann über sein Zahnrad eigene Kalender zeigen.'),
               onTap: () => _pickWidgetCalendars(context),
             ),
             SwitchListTile(
               secondary: const SizedBox(),
-              title: const Text('Feiertage im Widget'),
+              title: const Text('Feiertage in Widgets (Standard)'),
               value: s.widgetShowHolidays,
               onChanged: (v) { s.widgetShowHolidays = v; state.settingsChanged(); },
             ),
@@ -154,7 +153,7 @@ class SettingsScreen extends StatelessWidget {
                       ListTile(
                         leading: const Icon(Icons.calendar_view_month_outlined),
                         title: const Text('Monats-Widget hinzufügen'),
-                        subtitle: const Text('2–6 Wochen, Größe frei wählbar'),
+                        subtitle: const Text('Scrollbar · Tag antippen legt einen Termin an'),
                         onTap: () => WidgetService.pin(WidgetService.monthProvider),
                       ),
                       ListTile(
@@ -219,7 +218,7 @@ class SettingsScreen extends StatelessWidget {
       context: context,
       builder: (c) => StatefulBuilder(
         builder: (c, set) => AlertDialog(
-          title: const Text('Kalender im Widget'),
+          title: const Text('Standard-Kalender für Widgets'),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               for (final cal in state.calendars)
@@ -259,7 +258,7 @@ class _SourceTile extends StatelessWidget {
       title: Text(c.label),
       subtitle: Text(
         '${c.owner}/${c.repo}\n'
-        '${src.error ?? (last == null ? 'noch nicht synchronisiert' : 'Sync ${fmtDate(last)} ${fmtTime(last)}')}'
+        '${src.error ?? src.notice ?? (last == null ? 'noch nicht synchronisiert' : 'Sync ${fmtDate(last)} ${fmtTime(last)}')}'
         '${src.store.pendingCount > 0 ? ' · ${src.store.pendingCount} ausstehend' : ''}',
         style: src.error != null ? TextStyle(color: theme.colorScheme.error) : null,
       ),

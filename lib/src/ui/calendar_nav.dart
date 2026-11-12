@@ -8,9 +8,23 @@ class CalendarNav extends ChangeNotifier {
   DateTime? selected = dateOnly(DateTime.now());
   bool panelOpen = true;
 
-  /// Mehrfachauswahl von Tagen (langes Tippen im Monat).
-  final Set<DateTime> multi = {};
-  bool get multiSelect => multi.isNotEmpty;
+  /// Zeitraum-Auswahl im Monat: gedrückt halten = Beginn, ziehen = Ende.
+  DateTime? rangeAnchor;
+  DateTime? rangeEnd;
+  bool get rangeActive => rangeAnchor != null;
+
+  /// Beginn und Ende des gewählten Zeitraums (sortiert, Ende inklusive).
+  (DateTime, DateTime)? get range {
+    final a = rangeAnchor, b = rangeEnd ?? rangeAnchor;
+    if (a == null || b == null) return null;
+    return a.isAfter(b) ? (b, a) : (a, b);
+  }
+
+  bool inRange(DateTime day) {
+    final r = range;
+    if (r == null) return false;
+    return !day.isBefore(r.$1) && !day.isAfter(r.$2);
+  }
 
   /// Zähler, damit Ansichten auf "springe zu Datum" reagieren können.
   int jumpToken = 0;
@@ -45,14 +59,26 @@ class CalendarNav extends ChangeNotifier {
     notifyListeners();
   }
 
-  void toggleMulti(DateTime day) {
-    final d = dateOnly(day);
-    if (!multi.remove(d)) multi.add(d);
+  void startRange(DateTime day) {
+    rangeAnchor = dateOnly(day);
+    rangeEnd = rangeAnchor;
     notifyListeners();
   }
 
-  void clearMulti() {
-    multi.clear();
+  /// Liefert true, wenn sich das Ende geändert hat.
+  bool updateRange(DateTime day) {
+    final d = dateOnly(day);
+    if (rangeAnchor == null || rangeEnd == d) return false;
+    rangeEnd = d;
     notifyListeners();
+    return true;
+  }
+
+  (DateTime, DateTime)? finishRange() {
+    final r = range;
+    rangeAnchor = null;
+    rangeEnd = null;
+    notifyListeners();
+    return r;
   }
 }
