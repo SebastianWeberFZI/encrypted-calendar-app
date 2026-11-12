@@ -190,7 +190,9 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                   style: theme.textTheme.labelLarge
                       ?.copyWith(color: theme.colorScheme.primary, fontWeight: FontWeight.w700)),
             );
-        final appCals = state.calendars.where((c) => c.key != importCal?.key && !c.isSynced).toList();
+        // Alle außer dem eigenen Google-Kalender – auch „<andere Person> – Google“,
+        // damit man deren Termine vom eigenen Google-Kalender fernhalten kann.
+        final appCals = state.calendars.where((c) => c.key != importCal?.key).toList();
         final targets = s.googleTargets;
         return Scaffold(
           appBar: AppBar(title: const Text('Google-Kalender')),
@@ -239,7 +241,9 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                   for (final c in appCals)
                     ListTile(
                       leading: CircleAvatar(backgroundColor: Color(c.color), radius: 8),
-                      title: Text(c.name),
+                      title: Text(c.isSynced && c.syncOwner != s.userName
+                          ? '${c.name} (aus dem ${c.syncLabel}-Kalender von ${c.syncOwner})'
+                          : c.name),
                       subtitle: _targetDropdown(targets[c.key] ?? -2, (v) {
                         final t = Map.of(targets);
                         v == -2 ? t.remove(c.key) : t[c.key] = v;

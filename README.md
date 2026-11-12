@@ -55,6 +55,10 @@ Danach:
 - Serien, die die App nicht abbilden kann (z. B. „jeden 2. Dienstag“), erscheinen als einzelne Termine
   (30 Tage zurück bis gut ein Jahr voraus), änderbar nur in Google. Erinnerungen, Teilnehmer und
   Terminfarben werden nicht übertragen; abgeglichen wird ab 90 Tagen in der Vergangenheit.
+- Jede Person kann das auf ihrem eigenen Handy einschalten (der Kalender heißt dann nach ihrem Profilnamen,
+  z. B. „Sebastian – Google“). Die Google-Termine der anderen Person landen standardmäßig mit im eigenen
+  Google-Kalender; unter „Je App-Kalender“ lässt sich das abschalten. Einen in Google geteilten Kalender
+  sollte nur eine Person übernehmen, sonst erscheint er doppelt.
 - Zuordnungen liegen nur auf diesem Handy (`google_sync/state.json`); übernommene Termine tragen im Repo
   das Feld `google` (ID im Handy-Kalender), der Kalender das Feld `sync` (Besitzerin).
 
