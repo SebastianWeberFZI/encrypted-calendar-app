@@ -1,0 +1,19 @@
+name: system_calendar
+description: Zugriff auf den Android-Kalenderspeicher (CalendarContract) für den Kalender-Abgleich dieser App.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.12.0
+  flutter: ">=3.27.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: de.sweber.system_calendar
+        pluginClass: SystemCalendarPlugin

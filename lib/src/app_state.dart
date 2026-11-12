@@ -11,6 +11,8 @@ import 'services/email_service.dart';
 import 'services/notification_service.dart';
 import 'services/widget_service.dart';
 import 'settings.dart';
+import 'sync/google_sync.dart';
+import 'sync/google_sync_service.dart';
 
 /// Zentraler UI-Zustand: Datenquellen, Sichtbarkeit, Sync, Folgeaktionen
 /// (Erinnerungen, Widgets, Mails) nach Datenänderungen.
@@ -121,6 +123,19 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           calendarKeys: visibleKeys,
           holidayState: settings.showHolidays ? settings.holidayState : null);
 
+  // ------------------------------------------------------------ Rechte
+
+  /// Darf ich diesen Termin ändern? Übernommene Google-Termine nur ihre
+  /// Besitzerin; einzelne Vorkommen fremder Serien niemand (nur in Google).
+  bool canEdit(CalendarEvent e) {
+    if (e.isForeignInstance) return false;
+    return repo.calendar(e.calendarKey)?.editableBy(settings.userName) ?? true;
+  }
+
+  /// Kalender, in denen ich Termine anlegen darf.
+  List<CalendarDef> get writableCalendars =>
+      calendars.where((c) => c.editableBy(settings.userName)).toList();
+
   // ------------------------------------------------------------ Schreiben
 
   Future<void> saveEvent(CalendarEvent e, {String? previousSourceId}) async {
@@ -136,6 +151,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> deleteEvent(CalendarEvent e) async {
+    await GoogleSyncService.noteDeleted(repo, settings, e);
     await repo.deleteEvent(e);
     _changed();
   }
@@ -166,9 +182,41 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     _scheduleSideEffects();
     if (data) {
+      _googleDue = true;
       _syncDebounce?.cancel();
       _syncDebounce =
           Timer(const Duration(seconds: 2), () => syncNow(silent: true));
+    }
+  }
+
+  // ------------------------------------------------------------ Google-Kalender
+  bool _googleDue = true;
+  DateTime? _googleLast;
+  bool googleSyncing = false;
+
+  /// Abgleich mit dem Handy-Kalender: nach eigenen Änderungen sofort, sonst
+  /// höchstens jede Minute (die Daten liegen lokal, das kostet kaum etwas).
+  Future<GoogleSyncResult?> googleSyncNow({bool force = false}) async {
+    if (!settings.googleSync || googleSyncing) return null;
+    final last = _googleLast;
+    if (!force && !_googleDue && last != null && DateTime.now().difference(last).inSeconds < 55) {
+      return null;
+    }
+    googleSyncing = true;
+    _googleDue = false;
+    _googleLast = DateTime.now();
+    try {
+      final r = await GoogleSyncService.run(repo, settings);
+      if (r != null && r.appChanged) {
+        repo.touch();
+        _scheduleSideEffects();
+        _syncDebounce?.cancel();
+        _syncDebounce = Timer(const Duration(seconds: 1), () => syncNow(silent: true));
+      }
+      return r;
+    } finally {
+      googleSyncing = false;
+      notifyListeners();
     }
   }
 
@@ -200,6 +248,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final before = repo.version;
       final results = await repo.syncAll();
+      await googleSyncNow();
       final changes = results.fold<int>(0, (s, r) => s + r.pulled);
       final conflicts = results.fold<int>(0, (s, r) => s + r.conflicts);
       final notices = [

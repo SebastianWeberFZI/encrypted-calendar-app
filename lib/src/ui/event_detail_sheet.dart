@@ -110,16 +110,35 @@ class EventDetailSheet extends StatelessWidget {
                         ?.copyWith(color: theme.colorScheme.outline)),
               ),
             const SizedBox(height: 16),
-            Row(children: [
-              FilledButton.tonalIcon(
-                icon: const Icon(Icons.edit_outlined),
-                label: const Text('Bearbeiten'),
-                onPressed: () {
-                  Navigator.pop(context);
-                  openEventEditor(context, state, event: e);
-                },
+            if (!state.canEdit(e))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(children: [
+                  Icon(Icons.lock_outline, size: 18, color: theme.colorScheme.outline),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      e.isForeignInstance
+                          ? 'Teil einer Serie aus dem ${cal?.syncLabel ?? 'Google'}-Kalender – nur dort änderbar.'
+                          : 'Aus dem ${cal?.syncLabel ?? 'Google'}-Kalender von ${cal?.syncOwner ?? ''} – '
+                              'nur ${cal?.syncOwner ?? ''} kann ihn ändern.',
+                      style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+                    ),
+                  ),
+                ]),
               ),
-              const SizedBox(width: 8),
+            Row(children: [
+              if (state.canEdit(e)) ...[
+                FilledButton.tonalIcon(
+                  icon: const Icon(Icons.edit_outlined),
+                  label: const Text('Bearbeiten'),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    openEventEditor(context, state, event: e);
+                  },
+                ),
+                const SizedBox(width: 8),
+              ],
               IconButton(
                 tooltip: 'Duplizieren',
                 icon: const Icon(Icons.copy_outlined),
@@ -133,12 +152,13 @@ class EventDetailSheet extends StatelessWidget {
                 },
               ),
               const Spacer(),
-              TextButton.icon(
-                icon: const Icon(Icons.delete_outline),
-                label: const Text('Löschen'),
-                style: TextButton.styleFrom(foregroundColor: theme.colorScheme.error),
-                onPressed: () => _delete(context, e),
-              ),
+              if (state.canEdit(e))
+                TextButton.icon(
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Löschen'),
+                  style: TextButton.styleFrom(foregroundColor: theme.colorScheme.error),
+                  onPressed: () => _delete(context, e),
+                ),
             ]),
           ],
         ),

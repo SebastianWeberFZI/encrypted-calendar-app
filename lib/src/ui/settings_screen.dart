@@ -8,10 +8,12 @@ import '../calendar_repository.dart';
 import '../core/werkstatt.dart';
 import '../models/holidays.dart';
 import '../services/widget_service.dart';
+import '../sync/google_sync_service.dart';
 import '../werkstatt/demo_data.dart';
 import 'calendars_screen.dart';
 import 'email_settings_screen.dart';
 import 'format.dart';
+import 'google_sync_screen.dart';
 import 'source_setup_screen.dart';
 import 'theme.dart';
 
@@ -63,6 +65,19 @@ class SettingsScreen extends StatelessWidget {
               onTap: () => Navigator.push(
                   context, MaterialPageRoute(builder: (_) => CalendarsScreen(state: state))),
             ),
+            if (GoogleSyncService.supported) ...[
+              header('Google-Kalender'),
+              ListTile(
+                leading: const Icon(Icons.sync_alt),
+                title: const Text('Mit Google-Kalender abgleichen'),
+                subtitle: Text(s.googleSync
+                    ? (s.googleStatus.isEmpty ? 'An' : s.googleStatus.split('\n').first)
+                    : 'Aus – z. B. für alle, die ihren Google-Kalender weiter nutzen'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                    context, MaterialPageRoute(builder: (_) => GoogleSyncScreen(state: state))),
+              ),
+            ],
             header('Ansicht'),
             SwitchListTile(
               secondary: const Icon(Icons.view_carousel_outlined),

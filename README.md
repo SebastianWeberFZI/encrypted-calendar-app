@@ -32,6 +32,31 @@ Beim ersten Start fragt die App nach dem privaten Daten-Repo, einem Fine-grained
 - **Mehrtägige Termine** als ein Termin mit durchgehendem Balken; anlegen per langem Drücken und Ziehen über die Tage
 - Startbildschirm-**Widgets**: „Monat“ (scrollbar, Tag antippen legt einen Termin an) und „Agenda“; Kalenderauswahl je Widget über das Zahnrad
 - Offline-First, Sync-Queue, Konflikte: jüngere Änderung gewinnt, die andere bleibt als „(Konflikt)“-Kopie
+- **Abgleich mit dem Google-Kalender** (bzw. jedem Kalender des Handys), siehe unten
+
+## Google-Kalender abgleichen
+Für alle, die ihren Google-Kalender weiter nutzen. Der Abgleich läuft auf dem Android-Handy dieser
+Person über den Kalenderspeicher von Android – ohne Google-Login in der App und ohne Google-Bibliothek;
+Google selbst überträgt die Termine zwischen Handy und Konto.
+
+1. Auf dem Handy: Google-Konto in den Android-Einstellungen, Kalender-Synchronisierung an.
+2. In der App: Einstellungen → **Google-Kalender** → „Mit dem Kalender dieses Handys abgleichen“,
+   Kalenderzugriff erlauben, Datenquelle für die Google-Termine wählen (empfohlen: die gemeinsame).
+
+Danach:
+- Termine aller App-Kalender landen im Google-Hauptkalender (je App-Kalender umstellbar oder abschaltbar).
+  Sie sind als Kopien der App markiert und kommen nicht doppelt zurück.
+- Termine aus dem Google-Kalender erscheinen im App-Kalender „<Name> – Google“ (z. B. „Sarah – Google“).
+  Alle, die die Datenquelle nutzen, sehen sie; ändern kann sie nur die Besitzerin – Änderungen anderer
+  werden zurückgesetzt.
+- Änderungen und Löschungen laufen in beide Richtungen (beim Öffnen, nach Änderungen, etwa jede Minute bei
+  offener App und alle 15 Minuten im Hintergrund). Ändern beide Seiten denselben Termin, gewinnt die
+  Herkunftsseite. Verschwinden plötzlich viele Termine auf einer Seite, wird nichts gelöscht.
+- Serien, die die App nicht abbilden kann (z. B. „jeden 2. Dienstag“), erscheinen als einzelne Termine
+  (30 Tage zurück bis gut ein Jahr voraus), änderbar nur in Google. Erinnerungen, Teilnehmer und
+  Terminfarben werden nicht übertragen; abgeglichen wird ab 90 Tagen in der Vergangenheit.
+- Zuordnungen liegen nur auf diesem Handy (`google_sync/state.json`); übernommene Termine tragen im Repo
+  das Feld `google` (ID im Handy-Kalender), der Kalender das Feld `sync` (Besitzerin).
 
 ## Daten-Repo
 ```

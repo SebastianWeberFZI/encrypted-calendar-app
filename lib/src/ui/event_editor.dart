@@ -15,7 +15,7 @@ Future<void> openEventEditor(BuildContext context, AppState state,
     DateTime? initialDay,
     (DateTime, DateTime)? initialRange,
     List<DateTime>? multiDays}) {
-  if (state.calendars.isEmpty) {
+  if (state.writableCalendars.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('Lege zuerst unter Einstellungen → Kalender einen Kalender an.')));
     return Future.value();
@@ -73,7 +73,7 @@ class _EventEditorState extends State<EventEditor> {
   void initState() {
     super.initState();
     final e = widget.event;
-    final cals = state.calendars;
+    final cals = state.writableCalendars;
     if (e != null) {
       _cal = cals.firstWhere((c) => c.key == e.calendarKey, orElse: () => cals.first);
       _title = TextEditingController(text: e.title);
@@ -325,7 +325,7 @@ class _EventEditorState extends State<EventEditor> {
   }
 
   Widget _calendarPicker(ThemeData theme) {
-    final cals = state.calendars;
+    final cals = state.writableCalendars;
     return Wrap(spacing: 8, runSpacing: 8, children: [
       for (final c in cals)
         ChoiceChip(

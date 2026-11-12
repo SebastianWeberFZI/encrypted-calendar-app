@@ -11,6 +11,7 @@ import '../services/email_service.dart';
 import '../services/notification_service.dart';
 import '../services/widget_service.dart';
 import '../settings.dart';
+import '../sync/google_sync_service.dart';
 
 const kPeriodicTask = 'kalender-sync';
 
@@ -45,7 +46,13 @@ Future<void> runBackgroundCycle({bool force = false}) async {
   final beat = settings.foregroundBeat;
   final appActive =
       !force && beat != null && DateTime.now().difference(beat).inMinutes < 3;
-  if (!appActive) await repo.syncAll();
+  if (!appActive) {
+    await repo.syncAll();
+    // Abgleich mit dem Google-Kalender des Handys (falls eingeschaltet);
+    // was dabei in der App ankommt, gleich ins Repo übertragen.
+    final g = await GoogleSyncService.run(repo, settings);
+    if (g != null && g.appChanged) await repo.syncAll();
+  }
 
   final notifications = NotificationService();
   await notifications.init(requestPermissions: false);

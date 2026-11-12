@@ -111,6 +111,7 @@ class CalendarDef {
     List<Reminder>? defaultReminders,
     List<ColorLabel>? colorLabels,
     this.sortOrder = 0,
+    this.sync,
     DateTime? createdAt,
     DateTime? updatedAt,
     this.updatedBy = '',
@@ -143,9 +144,21 @@ class CalendarDef {
   /// Farben mit Bedeutung für Termine dieses Kalenders.
   List<ColorLabel> colorLabels;
   int sortOrder;
+
+  /// Kalender mit Terminen aus dem Handy-Kalender einer Person (z. B.
+  /// „Sarah – Google“): `{"type": "device", "owner": "Sarah", "label": "Google"}`.
+  /// Nur [syncOwner] ändert diese Termine – ihr Handy gleicht sie ab.
+  Map<String, dynamic>? sync;
   final DateTime createdAt;
   DateTime updatedAt;
   String updatedBy;
+
+  String get syncOwner => sync == null ? '' : jStr(sync!['owner']);
+  String get syncLabel => sync == null ? '' : jStr(sync!['label'], 'Google');
+  bool get isSynced => sync != null;
+
+  /// Darf [user] Termine dieses Kalenders anlegen und ändern?
+  bool editableBy(String user) => sync == null || syncOwner.isEmpty || syncOwner == user;
 
   /// Eindeutiger Schlüssel über alle Datenquellen.
   String get key => '$sourceId/$id';
@@ -172,6 +185,7 @@ class CalendarDef {
         'default_reminders': defaultReminders.map((r) => r.toJson()).toList(),
         'color_labels': colorLabels.map((l) => l.toJson()).toList(),
         'sort_order': sortOrder,
+        'sync': ?sync,
         'created_at': createdAt.toIso8601String(),
         'updated_at': updatedAt.toIso8601String(),
         'updated_by': updatedBy,
@@ -180,7 +194,7 @@ class CalendarDef {
 
   static const _known = {
     'id', 'name', 'color', 'kind', 'emoji', 'default_reminders',
-    'color_labels', 'sort_order', 'created_at', 'updated_at', 'updated_by',
+    'color_labels', 'sort_order', 'sync', 'created_at', 'updated_at', 'updated_by',
     'schema_version',
   };
 
@@ -205,6 +219,7 @@ class CalendarDef {
           jMaps(j['default_reminders']).map(Reminder.fromJson).toList(),
       colorLabels: jMaps(j['color_labels']).map(ColorLabel.fromJson).toList(),
       sortOrder: jInt(j['sort_order'], 0),
+      sync: jMap(j['sync']),
       createdAt: jDate(j['created_at']),
       updatedAt: jDate(j['updated_at']),
       updatedBy: jStr(j['updated_by']),
@@ -369,6 +384,16 @@ class CalendarEvent {
 
   String get path => 'events/$id.enc';
   String get calendarKey => '$sourceId/$calendarId';
+
+  /// Herkunft im Handy-Kalender (nur übernommene Termine).
+  Map<String, dynamic>? get google {
+    final g = extra['google'];
+    return g is Map ? g.cast<String, dynamic>() : null;
+  }
+
+  /// Einzelnes Vorkommen einer Serie, die die App nicht abbilden kann –
+  /// änderbar nur im Ursprungskalender.
+  bool get isForeignInstance => google?['instance'] != null;
   Duration get duration => end.difference(start);
   bool get isMultiDay => dateOnly(end).isAfter(dateOnly(start));
 

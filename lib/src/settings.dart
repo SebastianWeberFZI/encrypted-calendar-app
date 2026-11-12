@@ -94,6 +94,47 @@ class LocalSettings {
   String get lastAgendaMail => _p.getString('last_agenda_mail') ?? '';
   set lastAgendaMail(String v) => _p.setString('last_agenda_mail', v);
 
+  // ---------------------------------------------------------------- Google-Kalender
+  /// Abgleich mit dem Kalender dieses Handys (nur auf einem Handy pro Konto).
+  bool get googleSync => _p.getBool('gsync_enabled') ?? false;
+  set googleSync(bool v) => _p.setBool('gsync_enabled', v);
+
+  /// App-Kalender für die übernommenen Termine (`quelle/kalender`).
+  String get googleImportCalendar => _p.getString('gsync_import_cal') ?? '';
+  set googleImportCalendar(String v) => _p.setString('gsync_import_cal', v);
+
+  /// Handy-Kalender, deren Termine übernommen werden.
+  List<int> get googleImportFrom =>
+      (_p.getStringList('gsync_import_from') ?? const []).map(int.tryParse).whereType<int>().toList();
+  set googleImportFrom(List<int> v) =>
+      _p.setStringList('gsync_import_from', v.map((e) => '$e').toList());
+
+  /// Ziel für App-Termine (-1 = nicht übertragen).
+  int get googleDefaultTarget => _p.getInt('gsync_target') ?? -1;
+  set googleDefaultTarget(int v) => _p.setInt('gsync_target', v);
+
+  /// Abweichende Ziele je App-Kalender (-1 = nicht übertragen).
+  Map<String, int> get googleTargets {
+    try {
+      final j = jsonDecode(_p.getString('gsync_targets') ?? '{}') as Map;
+      return {for (final e in j.entries) '${e.key}': (e.value as num).toInt()};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  set googleTargets(Map<String, int> v) => _p.setString('gsync_targets', jsonEncode(v));
+
+  DateTime? get googleLastRun => DateTime.tryParse(_p.getString('gsync_last') ?? '');
+  set googleLastRun(DateTime? v) =>
+      v == null ? _p.remove('gsync_last') : _p.setString('gsync_last', v.toIso8601String());
+
+  /// Ergebnis oder Fehler des letzten Abgleichs (für die Einstellungen).
+  String get googleStatus => _p.getString('gsync_status') ?? '';
+  set googleStatus(String v) => _p.setString('gsync_status', v);
+  bool get googleStatusIsError => _p.getBool('gsync_status_error') ?? false;
+  set googleStatusIsError(bool v) => _p.setBool('gsync_status_error', v);
+
   // ---------------------------------------------------------------- Laufzeit
   /// Herzschlag der Vordergrund-App; der Hintergrund-Worker pausiert solange.
   DateTime? get foregroundBeat =>

@@ -45,7 +45,7 @@ class CalendarsScreen extends StatelessWidget {
                   ),
                   title: Text(c.name),
                   subtitle: Text([
-                    c.kind.label,
+                    if (c.isSynced) 'Aus dem ${c.syncLabel}-Kalender von ${c.syncOwner}' else c.kind.label,
                     '${state.repo.events.where((e) => e.calendarKey == c.key).length} Termine',
                     if (c.colorLabels.isNotEmpty) '${c.colorLabels.length} Farbbedeutungen',
                     if (c.defaultReminders.isNotEmpty)
