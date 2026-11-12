@@ -127,7 +127,7 @@ jobs:
           rm -f site/repo/keystore.p12 site/repo/config.yml
           python3 - "$URL" > site/qr.svg <<'PY'
           import sys, io, qrcode, qrcode.image.svg
-          img = qrcode.make(sys.argv[1], image_factory=qrcode.image.svg.SvgPathImage, box_size=12, border=2)
+          img = qrcode.make(sys.argv[1], image_factory=qrcode.image.svg.SvgPathFillImage, box_size=12, border=2)
           buf = io.BytesIO(); img.save(buf); sys.stdout.write(buf.getvalue().decode())
           PY
           cat > site/index.html <<HTML

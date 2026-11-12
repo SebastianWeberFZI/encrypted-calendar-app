@@ -5,6 +5,22 @@ Gemeinsamer Android-Kalender für zwei Personen nach dem Vorbild „Einfacher Ka
 verschlüsselt (Schlüssel per **Argon2id** aus der Passphrase) – gleiches Konzept wie
 `encrypted-todo-app`.
 
+## Installieren
+
+<a href="https://sebastianweberfzi.github.io/encrypted-calendar-app/"><img src="https://sebastianweberfzi.github.io/encrypted-calendar-app/qr.svg" alt="QR-Code der F-Droid-Paketquelle (Kalender)" width="180" align="right"></a>
+
+**F-Droid (empfohlen):** Auf der [Installationsseite](https://sebastianweberfzi.github.io/encrypted-calendar-app/) den QR-Code scannen
+(F-Droid → Einstellungen → Paketquellen → **+**) oder dort auf dem Handy auf „hier tippen“ –
+die Paketquelle wird dann direkt in F-Droid hinzugefügt. Updates kommen danach automatisch.
+
+**Ohne F-Droid:** APK der [neuesten Version](https://github.com/SebastianWeberFZI/encrypted-calendar-app/releases/latest)
+herunterladen und installieren.
+
+Beim ersten Start fragt die App nach dem privaten Daten-Repo, einem Fine-grained Token
+(nur „Contents: Read and write“) und der Passphrase.
+
+<br clear="right">
+
 ## Funktionen
 - Mehrere **Datenquellen** (z. B. „Gemeinsam“ + „Privat“), je Repo + Passphrase
 - Beliebig viele **Kalender** je Datenquelle (Farbe, Symbol, Standard-Erinnerungen; Art „Termine“ oder „Geburtstage“)
