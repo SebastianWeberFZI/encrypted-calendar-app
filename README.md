@@ -41,7 +41,15 @@ Google selbst überträgt die Termine zwischen Handy und Konto.
 
 1. Auf dem Handy: Google-Konto in den Android-Einstellungen, Kalender-Synchronisierung an.
 2. In der App: Einstellungen → **Google-Kalender** → „Mit dem Kalender dieses Handys abgleichen“,
-   Kalenderzugriff erlauben, Datenquelle für die Google-Termine wählen (empfohlen: die gemeinsame).
+   Kalenderzugriff erlauben, Kalender des Handys wählen (vorgeschlagen: der Google-Hauptkalender),
+   Datenquelle für die Google-Termine wählen (empfohlen: die gemeinsame).
+3. Vor dem Einschalten zeigt **Probelauf** Termin für Termin, was passieren würde – ohne etwas zu ändern.
+
+Gefahrlos ausprobieren: in Google einen leeren Kalender (z. B. „App-Test“) anlegen, auf dem Handy
+synchronisieren lassen, ihn in Schritt 2 wählen und als Datenquelle die private nehmen. „Abgleich beenden“
+entfernt danach alle Kopien wieder. Die App ändert nur den gewählten Kalender und nur auf dem Handy, auf dem
+der Abgleich eingeschaltet ist; Termine, die in Google angelegt wurden, ändert oder löscht sie nur, wenn ihre
+Besitzerin das in der App tut. Was jeder Abgleich geändert hat, steht unter „Letzte Änderungen“.
 
 Danach:
 - Termine aller App-Kalender landen im Google-Hauptkalender (je App-Kalender umstellbar oder abschaltbar).

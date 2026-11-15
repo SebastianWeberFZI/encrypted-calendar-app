@@ -86,10 +86,11 @@ void main() {
   late CalendarDef familie, google;
   final now = DateTime(2026, 11, 12, 18, 0);
 
-  GoogleSync sync({GoogleSyncConfig? config, String me = 'Sarah'}) => GoogleSync(
+  GoogleSync sync({GoogleSyncConfig? config, String me = 'Sarah', bool dryRun = false}) => GoogleSync(
         data: data,
         api: dev,
         me: me,
+        dryRun: dryRun,
         clock: () => now,
         stateFile: File('${tmp.path}/sub/state.json'),
         config: config ??
@@ -348,6 +349,51 @@ void main() {
       final copy = dev.live().singleWhere((x) => x.title == 'G');
       expect(copy.customAppUri, 'kalender://event/${e.id}');
       expect(data.inCal(google), isEmpty);
+    });
+
+    test('Probelauf ändert nichts, zeigt aber jeden Termin', () async {
+      ev('Elternabend', DateTime(2026, 11, 20, 19), DateTime(2026, 11, 20, 21));
+      googleOnly('Zahnarzt', DateTime(2026, 11, 18, 8), DateTime(2026, 11, 18, 9));
+      final rowsBefore = dev.rows.length;
+      final titleBefore = data.events.single.title;
+      final r = await sync(dryRun: true).run();
+      expect((r.exported, r.imported), (1, 1));
+      expect(r.log, contains('→ Google neu: Elternabend (20.11.2026)'));
+      expect(r.log, contains('← Google neu: Zahnarzt (18.11.2026)'));
+      expect(dev.rows.length, rowsBefore, reason: 'nichts im Handy-Kalender angelegt');
+      expect(data.events.length, 1, reason: 'nichts in der App angelegt');
+      expect(data.events.single.title, titleBefore);
+      expect(File('${tmp.path}/sub/state.json').existsSync(), isFalse, reason: 'kein Zustand gespeichert');
+      final real = await sync().run();
+      expect((real.exported, real.imported), (1, 1));
+      // Nach dem echten Lauf hat der Probelauf nichts mehr zu tun
+      expect((await sync(dryRun: true).run()).anything, isFalse);
+    });
+
+    test('Probelauf mit Änderungen fasst die echten Termine nicht an', () async {
+      final t = ev('Elternabend', DateTime(2026, 11, 20, 19), DateTime(2026, 11, 20, 21));
+      await sync().run();
+      final copyId = dev.live().single.id;
+      dev.rows[copyId]!['title'] = 'In Google umbenannt';
+      final r = await sync(dryRun: true).run();
+      expect(r.updatedIn, 1);
+      expect(t.title, 'Elternabend', reason: 'App-Termin unverändert');
+      await data.deleteEvent(t);
+      final r2 = await sync(dryRun: true).run();
+      expect(r2.deletedOut, 1);
+      expect(dev.rows[copyId]!['deleted'], 0, reason: 'Kopie nicht gelöscht');
+    });
+
+    test('Ein gleich aussehender eigener Google-Termin wird nie als Kopie behandelt', () async {
+      final s = DateTime(2026, 11, 20, 19), e = DateTime(2026, 11, 20, 21);
+      final app = ev('Elternabend', s, e);
+      final own = googleOnly('Elternabend', s, e); // selbst in Google eingetragen
+      await sync().run();
+      expect(dev.live().where((x) => x.title == 'Elternabend').length, 2);
+      await data.deleteEvent(app); // jemand löscht den App-Termin
+      await sync().run();
+      expect(dev.rows[own]!['deleted'], 0, reason: 'der eigene Google-Termin bleibt');
+      expect(data.inCal(google).single.title, 'Elternabend');
     });
 
     test('Ohne Berechtigung: verständlicher Fehler', () async {

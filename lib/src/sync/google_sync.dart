@@ -127,6 +127,12 @@ class GoogleSyncResult {
   int reverted = 0;
   final List<String> warnings = [];
 
+  /// Was geändert wurde (bzw. beim Probelauf: würde), eine Zeile je Termin.
+  final List<String> log = [];
+  void note(String line) {
+    if (log.length < 500) log.add(line);
+  }
+
   /// Wurden App-Termine geändert (dann muss die App ihr Repo abgleichen)?
   bool get appChanged => imported + updatedIn + deletedIn + reverted > 0;
   bool get anything => appChanged || exported + updatedOut + deletedOut > 0;
@@ -167,8 +173,17 @@ class GoogleSync {
     required this.config,
     required this.stateFile,
     required this.me,
+    this.dryRun = false,
+    this.extraCalendars = const [],
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now;
+
+  /// Probelauf: alles berechnen und protokollieren, aber nichts ändern –
+  /// weder im Handy-Kalender noch in der App noch im gespeicherten Zustand.
+  final bool dryRun;
+
+  /// Nur für den Probelauf: Kalender, die es erst nach dem Einschalten gibt.
+  final List<CalendarDef> extraCalendars;
 
   final AppCalendarData data;
   final DeviceCalendarApi api;
@@ -195,6 +210,14 @@ class GoogleSync {
 
   Future<GoogleSyncResult> _run() async {
     final res = GoogleSyncResult();
+    final api = dryRun ? _DryApi(this.api) : this.api;
+    final data = dryRun ? _DryData(this.data, extraCalendars) : this.data;
+    String label(CalendarEvent e) => '${e.title} (${e.start.day}.${e.start.month}.${e.start.year})';
+    String rowLabel(DeviceEvent? r) {
+      if (r == null) return 'Termin';
+      final (s, _) = rowTimes(r);
+      return '${r.title} (${s.day}.${s.month}.${s.year})';
+    }
     if (!await api.hasPermission()) {
       throw const GoogleSyncException('Keine Berechtigung für den Kalender des Handys.');
     }
@@ -256,7 +279,7 @@ class GoogleSync {
 
     // Löschungen, weil etwas auf der anderen Seite verschwand (mit Schutz)
     final vanishedInGoogle = <(CalendarEvent, void Function())>[];
-    final vanishedInApp = <(int, void Function())>[];
+    final vanishedInApp = <(int, String, void Function())>[];
 
     Map<String, Object?> rowValues(CalendarEvent e, {int? calendarId}) => rowValuesFromApp(e,
         calendarId: calendarId, appPackage: kAppPackage, appUri: '$_uriPrefix${e.id}');
@@ -265,19 +288,6 @@ class GoogleSync {
       final r = e.recurrence;
       if (r != null) return r.until == null || !r.until!.isBefore(fromDay);
       return !dateOnly(e.end).isBefore(fromDay);
-    }
-
-    // Gleicher Termin schon im Ziel (z. B. nach Neuinstallation)?
-    DeviceEvent? findTwin(CalendarEvent e, int target) {
-      final n = normFromApp(e);
-      for (final r in rows) {
-        if (r.calendarId != target || r.isException || inPairRows.contains(r.id)) continue;
-        if (state.out.values.any((p) => p.row == r.id)) continue;
-        if (r.customAppPackage == kAppPackage) continue;
-        final m = normFromRow(r, exceptionsOf[r.id] ?? const []);
-        if (m.title == n.title && m.start == n.start && m.end == n.end && m.allDay == n.allDay) return r;
-      }
-      return null;
     }
 
     // ---------------------------------------------------------- App → Handy
@@ -298,6 +308,7 @@ class GoogleSync {
           if (all[pair.row] != null && !all[pair.row]!.deleted) await api.delete(pair.row);
           state.out.remove(e.id);
           res.deletedOut++;
+          res.note('→ Google entfernt (Kalender wird nicht mehr übertragen): ${label(e)}');
         }
         continue;
       }
@@ -308,7 +319,9 @@ class GoogleSync {
       var p = pair;
       if (p == null) {
         if (!inWindow(e)) continue;
-        final twin = copiesByApp[e.id] ?? findTwin(e, target);
+        // Nur eigene, markierte Kopien wiederfinden – nie einen fremden
+        // Termin, der zufällig gleich aussieht.
+        final twin = copiesByApp[e.id];
         if (twin != null) {
           p = state.out[e.id] = OutPair(twin.id, twin.calendarId, '');
         } else {
@@ -317,6 +330,7 @@ class GoogleSync {
             state.out[e.id] = OutPair(id, target, normFromApp(e).hash);
             claimed.add(id);
             res.exported++;
+            res.note('→ Google neu: ${label(e)}');
           }
           continue;
         }
@@ -335,6 +349,7 @@ class GoogleSync {
         state.out[e.id] = OutPair(id, target, normFromApp(e).hash);
         claimed.add(id);
         res.updatedOut++;
+        res.note('→ Google in anderen Kalender verschoben: ${label(e)}');
         continue;
       }
       final desired = normFromApp(e);
@@ -348,11 +363,14 @@ class GoogleSync {
         await api.update(row.id, rowValues(e));
         p.hash = desired.hash;
         res.updatedOut++;
+        res.note('→ Google geändert: ${label(e)}');
       } else {
-        applyRowToApp(e, row, exceptionsOf[row.id] ?? const []);
-        await data.saveEvent(e);
-        p.hash = normFromApp(e).hash;
+        final x = dryRun ? e.copy() : e;
+        applyRowToApp(x, row, exceptionsOf[row.id] ?? const []);
+        await data.saveEvent(x);
+        p.hash = normFromApp(x).hash;
         res.updatedIn++;
+        res.note('← in Google geändert, übernommen: ${label(x)}');
       }
     }
     // App-Termine gelöscht → Kopie löschen
@@ -365,15 +383,15 @@ class GoogleSync {
         state.out.remove(entry.key);
         continue;
       }
-      vanishedInApp.add((row.id, () => state.out.remove(entry.key)));
+      vanishedInApp.add((row.id, rowLabel(row), () => state.out.remove(entry.key)));
     }
     // Verwaiste Kopien (App-Termin gibt es nicht mehr, Zuordnung verloren)
-    final queued = {for (final (id, _) in vanishedInApp) id};
+    final queued = {for (final (id, _, _) in vanishedInApp) id};
     for (final entry in copiesByApp.entries) {
       if (appById.containsKey(entry.key) || claimed.contains(entry.value.id) || queued.contains(entry.value.id)) {
         continue;
       }
-      vanishedInApp.add((entry.value.id, () {}));
+      vanishedInApp.add((entry.value.id, rowLabel(entry.value), () {}));
     }
 
     // ---------------------------------------------------------- Handy → App
@@ -425,6 +443,7 @@ class GoogleSync {
             await data.saveEvent(ne);
             state.inn[r.id] = InPair(ne.id, g.hash);
             res.imported++;
+            res.note('← Google neu: ${label(ne)}');
             continue;
           }
         }
@@ -434,6 +453,7 @@ class GoogleSync {
             await api.delete(r.id);
             state.inn.remove(r.id);
             res.deletedOut++;
+            res.note('→ in Google gelöscht (in der App gelöscht): ${rowLabel(r)}');
           } else {
             // Gelöscht, aber nicht von der Besitzerin: wiederherstellen.
             final ne = newImported(p.app);
@@ -442,6 +462,7 @@ class GoogleSync {
             await data.saveEvent(ne);
             p.hash = g.hash;
             res.reverted++;
+            res.note('↺ wiederhergestellt: ${label(ne)}');
           }
           continue;
         }
@@ -450,9 +471,11 @@ class GoogleSync {
           // kommt als Kopie zurück; das Original im Handy-Kalender entfällt.
           await api.delete(r.id);
           state.inn.remove(r.id);
-          ae.extra.remove('google');
-          await data.saveEvent(ae);
+          final x = dryRun ? ae.copy() : ae;
+          x.extra.remove('google');
+          await data.saveEvent(x);
           res.deletedOut++;
+          res.note('→ Google-Original ersetzt (in App-Kalender verschoben): ${label(ae)}');
           continue;
         }
         final a = normFromApp(ae);
@@ -462,14 +485,22 @@ class GoogleSync {
         }
         final googleChanged = g.hash != p.hash;
         if (googleChanged || ae.updatedBy != me) {
-          applyRowToApp(ae, r, ex);
-          await data.saveEvent(ae);
+          final x = dryRun ? ae.copy() : ae;
+          applyRowToApp(x, r, ex);
+          await data.saveEvent(x);
           p.hash = g.hash;
-          googleChanged ? res.updatedIn++ : res.reverted++;
+          if (googleChanged) {
+            res.updatedIn++;
+            res.note('← Google geändert: ${label(x)}');
+          } else {
+            res.reverted++;
+            res.note('↺ Änderung von ${ae.updatedBy} zurückgesetzt: ${label(x)}');
+          }
         } else {
           await api.update(r.id, rowValuesFromApp(ae));
           p.hash = a.hash;
           res.updatedOut++;
+          res.note('→ Google geändert: ${label(ae)}');
         }
       }
 
@@ -500,12 +531,18 @@ class GoogleSync {
             p!.hash = g.hash;
             continue;
           }
-          final target = ae ?? newImported(p?.app);
+          final target = ae == null ? newImported(p?.app) : (dryRun ? ae.copy() : ae);
           applyRowToApp(target, single);
           target.extra['google'] = {'event': id, 'calendar': r.calendarId, 'instance': b};
           await data.saveEvent(target);
           state.inst[key] = InPair(target.id, g.hash);
-          ae == null && p == null ? res.imported++ : res.updatedIn++;
+          if (ae == null && p == null) {
+            res.imported++;
+            res.note('← Google neu (Serientermin): ${label(target)}');
+          } else {
+            res.updatedIn++;
+            res.note('← Google geändert (Serientermin): ${label(target)}');
+          }
         }
         for (final key in state.inst.keys.where((k) => k.startsWith('$id:')).toList()) {
           if (current.contains(key)) continue;
@@ -515,6 +552,7 @@ class GoogleSync {
           if (ae != null) {
             await data.deleteEvent(ae);
             res.deletedIn++;
+            res.note('← Serientermin entfällt: ${label(ae)}');
           }
           state.inst.remove(key);
         }
@@ -540,6 +578,7 @@ class GoogleSync {
           await data.deleteEvent(ae);
           state.inn.remove(entry.key);
           res.deletedIn++;
+          res.note('← als einzelne Serientermine neu: ${label(ae)}');
         } else {
           vanishedInGoogle.add((ae, () => state.inn.remove(entry.key)));
         }
@@ -567,19 +606,67 @@ class GoogleSync {
         await data.deleteEvent(ae);
         done();
         res.deletedIn++;
+        res.note('← in Google gelöscht, auch in der App gelöscht: ${label(ae)}');
       }
     }
     if (tooMany(vanishedInApp.length, state.out.length)) {
       res.warnings.add('${vanishedInApp.length} App-Termine fehlen plötzlich – '
           'zur Sicherheit wurde im Google-Kalender nichts gelöscht.');
     } else {
-      for (final (rowId, done) in vanishedInApp) {
+      for (final (rowId, title, done) in vanishedInApp) {
         await api.delete(rowId);
         done();
         res.deletedOut++;
+        res.note('→ in der App gelöscht, auch in Google gelöscht: $title');
       }
     }
-    await state.save(stateFile);
+    if (!dryRun) await state.save(stateFile);
     return res;
   }
+}
+
+/// Probelauf: liest echt, schreibt nichts in den Handy-Kalender.
+class _DryApi implements DeviceCalendarApi {
+  _DryApi(this.real);
+  final DeviceCalendarApi real;
+  var _next = 1 << 40;
+
+  @override
+  Future<bool> hasPermission() => real.hasPermission();
+  @override
+  Future<List<DeviceCalendar>> calendars() => real.calendars();
+  @override
+  Future<List<DeviceEvent>> events(List<int> calendarIds, int fromMillis) => real.events(calendarIds, fromMillis);
+  @override
+  Future<List<DeviceEvent>> eventsByIds(List<int> ids) => real.eventsByIds(ids);
+  @override
+  Future<List<(int, int)>> instances(int eventId, int fromMillis, int toMillis) =>
+      real.instances(eventId, fromMillis, toMillis);
+  @override
+  Future<int> insert(Map<String, Object?> values) async => _next++;
+  @override
+  Future<void> update(int id, Map<String, Object?> values) async {}
+  @override
+  Future<void> delete(int id) async {}
+}
+
+/// Probelauf: arbeitet auf Kopien der App-Termine, speichert nichts.
+class _DryData implements AppCalendarData {
+  _DryData(AppCalendarData real, List<CalendarDef> extra)
+      : calendars = [...real.calendars, ...extra],
+        events = [for (final e in real.events) e.copy()];
+
+  @override
+  final List<CalendarDef> calendars;
+  @override
+  final List<CalendarEvent> events;
+
+  @override
+  Future<void> saveEvent(CalendarEvent e) async {
+    events.removeWhere((x) => x.id == e.id);
+    events.add(e);
+  }
+
+  @override
+  Future<void> deleteEvent(CalendarEvent e) async => events.removeWhere((x) => x.id == e.id);
 }

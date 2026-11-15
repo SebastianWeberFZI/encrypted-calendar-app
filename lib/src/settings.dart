@@ -125,6 +125,10 @@ class LocalSettings {
 
   set googleTargets(Map<String, int> v) => _p.setString('gsync_targets', jsonEncode(v));
 
+  /// Was die letzten Abgleiche geändert haben (neueste zuerst, gekürzt).
+  List<String> get googleLog => _p.getStringList('gsync_log') ?? const [];
+  set googleLog(List<String> v) => _p.setStringList('gsync_log', v);
+
   DateTime? get googleLastRun => DateTime.tryParse(_p.getString('gsync_last') ?? '');
   set googleLastRun(DateTime? v) =>
       v == null ? _p.remove('gsync_last') : _p.setString('gsync_last', v.toIso8601String());

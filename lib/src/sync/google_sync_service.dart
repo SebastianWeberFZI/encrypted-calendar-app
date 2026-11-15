@@ -51,7 +51,16 @@ class GoogleSyncService {
         stateFile: stateFile(repo.baseDir),
         me: settings.userName,
       ).run();
-      settings.googleLastRun = DateTime.now();
+      final now = DateTime.now();
+      settings.googleLastRun = now;
+      if (r.log.isNotEmpty) {
+        String two(int v) => v.toString().padLeft(2, '0');
+        settings.googleLog = [
+          '— ${now.day}.${now.month}. ${two(now.hour)}:${two(now.minute)} Uhr',
+          ...r.log,
+          ...settings.googleLog,
+        ].take(150).toList();
+      }
       if (r.warnings.isNotEmpty) {
         settings.googleStatus = r.warnings.join('\n');
         settings.googleStatusIsError = true;
@@ -66,6 +75,20 @@ class GoogleSyncService {
       return null;
     }
   }
+
+  /// Probelauf: was ein Abgleich mit [config] ändern würde – ändert nichts.
+  static Future<GoogleSyncResult> preview(
+          CalendarRepository repo, LocalSettings settings, GoogleSyncConfig config,
+          {List<CalendarDef> extra = const []}) =>
+      GoogleSync(
+        data: RepoCalendarData(repo),
+        api: api,
+        config: config,
+        stateFile: stateFile(repo.baseDir),
+        me: settings.userName,
+        dryRun: true,
+        extraCalendars: extra,
+      ).run();
 
   /// Legt den App-Kalender für die übernommenen Termine an (z. B. „Sarah – Google“).
   static CalendarDef newImportCalendar(String sourceId, String owner) => CalendarDef(
@@ -100,6 +123,7 @@ class GoogleSyncService {
     settings.googleStatus = '';
     settings.googleStatusIsError = false;
     settings.googleLastRun = null;
+    settings.googleLog = [];
     return removed;
   }
 }

@@ -4,6 +4,7 @@ import 'package:system_calendar/system_calendar.dart';
 import '../app_state.dart';
 import '../models/calendar_models.dart';
 import '../sync/device_calendar.dart';
+import '../sync/google_sync.dart';
 import '../sync/google_sync_service.dart';
 import 'format.dart';
 
@@ -50,9 +51,36 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
       return _toast('Kein beschreibbarer Kalender auf dem Handy – Google-Konto in den '
           'Android-Einstellungen hinzufügen und Kalender-Synchronisierung einschalten.');
     }
-    final main = writable.where((c) => c.isGoogle && c.isMain).firstOrNull ??
+    final suggested = writable.where((c) => c.isGoogle && c.isMain).firstOrNull ??
         writable.where((c) => c.isMain).firstOrNull ??
         writable.first;
+    // Mit welchem Kalender des Handys? Zum Ausprobieren einen leeren Test-Kalender.
+    var main = suggested;
+    if (writable.length > 1 && mounted) {
+      final picked = await showDialog<int>(
+        context: context,
+        builder: (ctx) => SimpleDialog(
+          title: const Text('Mit welchem Kalender des Handys abgleichen?'),
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 0, 24, 8),
+              child: Text('Zum gefahrlosen Ausprobieren vorher in Google einen leeren Kalender '
+                  '(z. B. „App-Test“) anlegen, auf dem Handy synchronisieren lassen und hier wählen.'),
+            ),
+            for (final c in [suggested, ...writable.where((x) => x.id != suggested.id)])
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(ctx, c.id),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Text('${c.label}${c.id == suggested.id ? '  (Hauptkalender)' : ''}'),
+                ),
+              ),
+          ],
+        ),
+      );
+      if (picked == null) return;
+      main = writable.firstWhere((c) => c.id == picked);
+    }
     // Datenquelle für die übernommenen Termine (Standard: die gemeinsame)
     var importCal = _importCal;
     if (importCal == null) {
@@ -65,6 +93,10 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
           builder: (c) => SimpleDialog(
             title: const Text('Wo sollen deine Google-Termine erscheinen?'),
             children: [
+              const Padding(
+                padding: EdgeInsets.fromLTRB(24, 0, 24, 8),
+                child: Text('Zum Ausprobieren deine private Datenquelle wählen – dann sieht sie niemand sonst.'),
+              ),
               for (final x in sources)
                 SimpleDialogOption(
                   onPressed: () => Navigator.pop(c, x.id),
@@ -81,32 +113,59 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
       }
       importCal = GoogleSyncService.newImportCalendar(src.id, s.userName);
     }
+    final CalendarDef cal = importCal;
     if (!mounted) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('Abgleich einschalten?'),
-        content: Text(
-            '• Termine aus allen App-Kalendern werden in „${main.label}“ gespeichert.\n'
-            '• Termine aus „${main.label}“ erscheinen hier im Kalender „${importCal!.name}“. '
-            'Alle, die diese Datenquelle nutzen, sehen sie – ändern kannst nur du.\n'
-            '• Änderungen und Löschungen laufen in beide Richtungen.\n\n'
-            'Mach das nur auf einem Handy pro Google-Konto.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Abbrechen')),
-          FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Einschalten')),
-        ],
-      ),
+    final config = GoogleSyncConfig(
+      importCalendarKey: cal.key,
+      importFrom: [main.id],
+      defaultTarget: main.id,
+      // Ausnahmen „nicht übertragen“ bleiben, Ziele in andere Kalender nicht.
+      targets: {for (final e in s.googleTargets.entries) if (e.value < 0) e.key: null},
     );
-    if (ok != true) return;
+    // Bestätigen – auf Wunsch erst ein Probelauf, der nichts ändert.
+    while (true) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Abgleich einschalten?'),
+          content: Text(
+              '• Termine aus allen App-Kalendern werden in „${main.label}“ gespeichert.\n'
+              '• Termine aus „${main.label}“ erscheinen hier im Kalender „${cal.name}“. '
+              'Alle, die diese Datenquelle nutzen, sehen sie – ändern kannst nur du.\n'
+              '• Änderungen und Löschungen laufen in beide Richtungen.\n\n'
+              'Der Probelauf zeigt vorher, was passieren würde, und ändert nichts.\n'
+              'Mach das nur auf einem Handy pro Google-Konto.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c), child: const Text('Abbrechen')),
+            TextButton(onPressed: () => Navigator.pop(c, 'probe'), child: const Text('Probelauf')),
+            FilledButton(onPressed: () => Navigator.pop(c, 'on'), child: const Text('Einschalten')),
+          ],
+        ),
+      );
+      if (choice == null || !mounted) return;
+      if (choice == 'on') break;
+      setState(() => _busy = true);
+      GoogleSyncResult? r;
+      String? error;
+      try {
+        r = await GoogleSyncService.preview(state.repo, s, config, extra: [if (_importCal == null) cal]);
+      } catch (e) {
+        error = '$e';
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+      if (!mounted) return;
+      final go = await _showResult('Probelauf – nichts wurde geändert', r, error, offerEnable: true);
+      if (go == true) break;
+      if (!mounted) return;
+    }
     setState(() => _busy = true);
     try {
-      if (_importCal == null) await state.saveCalendar(importCal);
-      s.googleImportCalendar = importCal.key;
-      if (s.googleDefaultTarget < 0 || !_devCals.any((c) => c.id == s.googleDefaultTarget)) {
-        s.googleDefaultTarget = main.id;
-      }
-      if (s.googleImportFrom.isEmpty) s.googleImportFrom = [main.id];
+      if (_importCal == null) await state.saveCalendar(cal);
+      s.googleImportCalendar = cal.key;
+      s.googleDefaultTarget = main.id;
+      s.googleImportFrom = [main.id];
+      s.googleTargets = {for (final e in s.googleTargets.entries) if (e.value < 0) e.key: e.value};
       s.googleSync = true;
       final r = await state.googleSyncNow(force: true);
       if (r != null) _toast(r.summary);
@@ -114,6 +173,41 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
       if (mounted) setState(() => _busy = false);
     }
   }
+
+  /// Ergebnis eines (Probe-)Laufs mit Liste der einzelnen Termine.
+  Future<bool?> _showResult(String title, GoogleSyncResult? r, String? error, {bool offerEnable = false}) =>
+      showDialog<bool>(
+        context: context,
+        builder: (c) {
+          final theme = Theme.of(c);
+          return AlertDialog(
+            title: Text(title),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 380,
+              child: ListView(children: [
+                Text(error ?? r!.summary, style: theme.textTheme.titleSmall),
+                for (final w in r?.warnings ?? const <String>[])
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(w, style: TextStyle(color: theme.colorScheme.error)),
+                  ),
+                const SizedBox(height: 8),
+                for (final line in r?.log ?? const <String>[])
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Text(line, style: theme.textTheme.bodySmall),
+                  ),
+              ]),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(c, false), child: Text(offerEnable ? 'Zurück' : 'Schließen')),
+              if (offerEnable && error == null)
+                FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Einschalten')),
+            ],
+          );
+        },
+      );
 
   Future<void> _disable() async {
     var remove = true;
@@ -224,6 +318,23 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                     ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
                     : IconButton(tooltip: 'Jetzt abgleichen', icon: const Icon(Icons.refresh), onPressed: _syncNow),
               ),
+              if (s.googleLog.isNotEmpty)
+                ExpansionTile(
+                  leading: const Icon(Icons.history),
+                  title: const Text('Letzte Änderungen'),
+                  childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+                  expandedCrossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final line in s.googleLog)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(line,
+                            style: line.startsWith('—')
+                                ? theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700)
+                                : theme.textTheme.bodySmall),
+                      ),
+                  ],
+                ),
               header('App → Handy-Kalender'),
               ListTile(
                 leading: const Icon(Icons.upload_outlined),
