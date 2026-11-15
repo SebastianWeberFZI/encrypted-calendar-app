@@ -118,8 +118,9 @@ class SyncEngine {
           throw const RepoTooNewException();
         }
       }
-      for (var round = 0; round < 3 && store.pending.isNotEmpty; round++) {
-        await _push(result);
+      var budget = _pushBudget();
+      for (var round = 0; round < 3 && store.pending.isNotEmpty && budget > 0; round++) {
+        budget -= await _push(result, budget);
       }
       await _pull(result);
       store.lastSync = DateTime.now();
@@ -133,14 +134,45 @@ class SyncEngine {
 
   // ---------------------------------------------------------------- Push
 
-  Future<void> _push(SyncResult result) async {
-    for (final op in List.of(store.pending)) {
-      if (op.isDelete) {
-        await _pushDelete(op, result);
-      } else {
-        await _pushUpsert(op, result);
+  /// Höchstens so viele Schreibzugriffe je Sync und je Stunde: GitHub nimmt
+  /// nur etwa 80 pro Minute und 500 pro Stunde an. Große Mengen (z. B. eine
+  /// Übernahme vieler alter Termine) gehen so über mehrere Syncs hinaus.
+  static const maxPushPerSync = 60;
+  static const maxPushPerHour = 400;
+
+  int _pushBudget() {
+    final now = DateTime.now();
+    final paused = store.pushPausedUntil;
+    if (paused != null && now.isBefore(paused)) return 0;
+    store.pushLog.removeWhere((t) => now.millisecondsSinceEpoch - t > const Duration(hours: 1).inMilliseconds);
+    final left = maxPushPerHour - store.pushLog.length;
+    return left < maxPushPerSync ? left : maxPushPerSync;
+  }
+
+  /// Spielt bis zu [budget] Einträge der Queue ab, neueste zuerst (eigene
+  /// Änderungen überholen eine laufende Massenübernahme). Liefert die Anzahl.
+  Future<int> _push(SyncResult result, int budget) async {
+    final ops = List.of(store.pending)..sort((a, b) => b.at.compareTo(a.at));
+    var used = 0;
+    for (final op in ops) {
+      if (used >= budget) break;
+      try {
+        if (op.isDelete) {
+          await _pushDelete(op, result);
+        } else {
+          await _pushUpsert(op, result);
+        }
+      } on GithubApiException catch (e) {
+        if (!e.isRateLimited) rethrow;
+        // Gedrosselt: eine Weile nichts senden, Empfangen geht weiter.
+        store.pushPausedUntil = DateTime.now().add(const Duration(minutes: 15));
+        await store.saveState();
+        return budget;
       }
+      used++;
+      store.pushLog.add(DateTime.now().millisecondsSinceEpoch);
     }
+    return used;
   }
 
   Future<void> _pushUpsert(PendingOp op, SyncResult result) async {

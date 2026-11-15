@@ -142,6 +142,32 @@ class SystemCalendarPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
             context.contentResolver.delete(
                 ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id), null, null)
         }
+        "reminders" -> {
+            val ids = call.argument<List<Number>>("ids")!!.map { it.toLong() }
+            query(CalendarContract.Reminders.CONTENT_URI,
+                arrayOf(CalendarContract.Reminders.EVENT_ID, CalendarContract.Reminders.MINUTES,
+                    CalendarContract.Reminders.METHOD),
+                "${CalendarContract.Reminders.EVENT_ID} IN (${ids.joinToString(",")})", null)
+        }
+        "setAlerts" -> {
+            val id = call.argument<Number>("eventId")!!.toLong()
+            val minutes = call.argument<List<Number>>("minutes")!!.map { it.toInt() }.distinct()
+            val cr = context.contentResolver
+            // Nur Benachrichtigungen ersetzen; E-Mail/SMS-Erinnerungen bleiben.
+            cr.delete(CalendarContract.Reminders.CONTENT_URI,
+                "${CalendarContract.Reminders.EVENT_ID} = ? AND ${CalendarContract.Reminders.METHOD} IN (" +
+                    "${CalendarContract.Reminders.METHOD_DEFAULT}, ${CalendarContract.Reminders.METHOD_ALERT}, " +
+                    "${CalendarContract.Reminders.METHOD_ALARM})",
+                arrayOf(id.toString()))
+            for (m in minutes) {
+                val v = ContentValues()
+                v.put(CalendarContract.Reminders.EVENT_ID, id)
+                v.put(CalendarContract.Reminders.MINUTES, m)
+                v.put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+                cr.insert(CalendarContract.Reminders.CONTENT_URI, v)
+            }
+            minutes.size
+        }
         else -> throw NotImplementedError()
     }
 
@@ -205,6 +231,7 @@ class SystemCalendarPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
             CalendarContract.Events.ORIGINAL_ID, CalendarContract.Events.ORIGINAL_INSTANCE_TIME,
             CalendarContract.Events.ORIGINAL_ALL_DAY, CalendarContract.Events.STATUS,
             CalendarContract.Events.DELETED, CalendarContract.Events.CUSTOM_APP_PACKAGE,
-            CalendarContract.Events.CUSTOM_APP_URI, CalendarContract.Events.LAST_DATE)
+            CalendarContract.Events.CUSTOM_APP_URI, CalendarContract.Events.LAST_DATE,
+            CalendarContract.Events.HAS_ALARM)
     }
 }

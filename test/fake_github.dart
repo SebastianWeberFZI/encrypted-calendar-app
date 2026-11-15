@@ -12,6 +12,9 @@ class FakeGithub {
   int writes = 0;
   int blobReads = 0;
 
+  /// Simuliert die Drosselung durch GitHub (zu viele Schreibzugriffe).
+  bool throttle = false;
+
   static String blobSha(List<int> data) =>
       sha1.convert([...utf8.encode('blob ${data.length}\u0000'), ...data]).toString();
 
@@ -43,6 +46,8 @@ class FakeGithub {
             case 'GET':
               if (cur == null) return _json(404, {'message': 'Not Found'});
               return _json(200, {'type': 'file', 'path': p, 'sha': blobSha(cur)});
+            case 'PUT' || 'DELETE' when throttle:
+              return _json(403, {'message': 'You have exceeded a secondary rate limit.'});
             case 'PUT':
               final body = jsonDecode(req.body) as Map<String, dynamic>;
               final given = body['sha'] as String?;

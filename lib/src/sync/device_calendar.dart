@@ -69,6 +69,8 @@ class DeviceEvent {
     this.deleted = false,
     this.customAppPackage,
     this.customAppUri,
+    this.hasAlarm = false,
+    this.alerts = const [],
   });
 
   final int id;
@@ -94,6 +96,10 @@ class DeviceEvent {
   final bool deleted;
   final String? customAppPackage;
   final String? customAppUri;
+  final bool hasAlarm;
+
+  /// Benachrichtigungen (Minuten vorher, sortiert) aus der Erinnerungstabelle.
+  final List<int> alerts;
 
   bool get isException => originalId != null;
   bool get canceled => status == 2;
@@ -119,8 +125,16 @@ class DeviceEvent {
         deleted: _int(r['deleted']) == 1,
         customAppPackage: _strOrNull(r['customAppPackage']),
         customAppUri: _strOrNull(r['customAppUri']),
+        hasAlarm: _int(r['hasAlarm']) == 1,
+        alerts: r['alerts'] is List
+            ? ({for (final m in r['alerts'] as List) ?_int(m)}.toList()..sort())
+            : const [],
       );
 }
+
+/// Methoden der Erinnerungstabelle, die eine Benachrichtigung zeigen
+/// (Standard, Hinweis, Alarm) – E-Mail und SMS nicht.
+const kAlertMethods = {0, 1, 4};
 
 /// Zugriff auf die Kalender des Handys – im Test durch eine Attrappe ersetzt.
 abstract class DeviceCalendarApi {
@@ -136,6 +150,9 @@ abstract class DeviceCalendarApi {
   Future<int> insert(Map<String, Object?> values);
   Future<void> update(int id, Map<String, Object?> values);
   Future<void> delete(int id);
+
+  /// Ersetzt die Benachrichtigungen eines Termins (E-Mail-Erinnerungen bleiben).
+  Future<void> setAlerts(int eventId, List<int> minutes);
 }
 
 /// Die echte Umsetzung über das Plugin `system_calendar`.
@@ -151,18 +168,32 @@ class AndroidCalendarApi implements DeviceCalendarApi {
 
   @override
   Future<List<DeviceEvent>> events(List<int> calendarIds, int fromMillis) async =>
-      (await SystemCalendar.events(calendarIds: calendarIds, fromMillis: fromMillis))
-          .map(DeviceEvent.fromRow)
-          .toList();
+      _withAlerts(await SystemCalendar.events(calendarIds: calendarIds, fromMillis: fromMillis));
 
   @override
   Future<List<DeviceEvent>> eventsByIds(List<int> ids) async {
-    final out = <DeviceEvent>[];
+    final rows = <Map<String, Object?>>[];
     // In Portionen, damit die Abfrage nicht zu lang wird.
     for (var i = 0; i < ids.length; i += 200) {
-      out.addAll((await SystemCalendar.eventsByIds(ids.skip(i).take(200).toList())).map(DeviceEvent.fromRow));
+      rows.addAll(await SystemCalendar.eventsByIds(ids.skip(i).take(200).toList()));
     }
-    return out;
+    return _withAlerts(rows);
+  }
+
+  /// Hängt die Benachrichtigungen an (nur bei Terminen mit Erinnerung).
+  Future<List<DeviceEvent>> _withAlerts(List<Map<String, Object?>> rows) async {
+    final ids = [for (final r in rows) if (_int(r['hasAlarm']) == 1) ?_int(r['_id'])];
+    final alerts = <int, List<int>>{};
+    for (var i = 0; i < ids.length; i += 400) {
+      for (final x in await SystemCalendar.reminders(ids.skip(i).take(400).toList())) {
+        final id = _int(x['event_id']), m = _int(x['minutes']), method = _int(x['method']) ?? 1;
+        if (id == null || m == null || m < 0 || !kAlertMethods.contains(method)) continue;
+        alerts.putIfAbsent(id, () => []).add(m);
+      }
+    }
+    return [
+      for (final r in rows) DeviceEvent.fromRow({...r, 'alerts': ?alerts[_int(r['_id'])]}),
+    ];
   }
 
   @override
@@ -179,6 +210,9 @@ class AndroidCalendarApi implements DeviceCalendarApi {
 
   @override
   Future<void> delete(int id) => SystemCalendar.deleteEvent(id);
+
+  @override
+  Future<void> setAlerts(int eventId, List<int> minutes) => SystemCalendar.setAlerts(eventId, minutes);
 }
 
 int? _int(Object? v) => v is int ? v : (v is num ? v.toInt() : (v is String ? int.tryParse(v) : null));

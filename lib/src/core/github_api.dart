@@ -49,6 +49,10 @@ class GithubApiException implements Exception {
   /// SHA-Konflikt: Datei wurde zwischenzeitlich remote geändert.
   bool get isConflict => statusCode == 409 || statusCode == 422;
 
+  /// Von GitHub gedrosselt (zu viele Schreibzugriffe in kurzer Zeit).
+  bool get isRateLimited =>
+      statusCode == 429 || (statusCode == 403 && message.toLowerCase().contains('rate limit'));
+
   @override
   String toString() => 'GitHub-API-Fehler $statusCode: $message';
 }

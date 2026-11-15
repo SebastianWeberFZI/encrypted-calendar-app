@@ -54,6 +54,12 @@ class FakeDevice implements DeviceCalendarApi {
   Future<void> update(int id, Map<String, Object?> values) async => rows[id]!.addAll(values);
   @override
   Future<void> delete(int id) async => rows[id]?['deleted'] = 1;
+
+  @override
+  Future<void> setAlerts(int eventId, List<int> minutes) async {
+    rows[eventId]!['alerts'] = List.of(minutes);
+    rows[eventId]!['hasAlarm'] = minutes.isEmpty ? 0 : 1;
+  }
 }
 
 class MemoryData implements AppCalendarData {
@@ -124,9 +130,10 @@ void main() {
       final s = DateTime(2026, 11, 12, 9); // Donnerstag
       expect(parseRule('FREQ=WEEKLY;BYDAY=TH;WKST=MO', s)!.byWeekday, isEmpty);
       expect(parseRule('FREQ=WEEKLY;BYDAY=MO,TH', s)!.byWeekday, [1, 4]);
-      expect(parseRule('FREQ=MONTHLY;BYDAY=2TU', s), isNull);
-      expect(parseRule('FREQ=MONTHLY;BYMONTHDAY=12', s)!.freq, RecurrenceFreq.monthly);
-      expect(parseRule('FREQ=MONTHLY;BYMONTHDAY=1,15', s), isNull);
+      expect(parseRule('FREQ=MONTHLY;BYDAY=2TU', s)!.byDay, [const NthWeekday(2, 2)]);
+      expect(parseRule('FREQ=MONTHLY;BYMONTHDAY=12', s)!.isSimple, isTrue);
+      expect(parseRule('FREQ=MONTHLY;BYMONTHDAY=1,15', s)!.byMonthDay, [1, 15]);
+      expect(parseRule('FREQ=MONTHLY;BYDAY=2TU;X-NAME=1', s), isNull);
       expect(parseRule('FREQ=YEARLY;BYMONTH=11;BYMONTHDAY=12', s)!.freq, RecurrenceFreq.yearly);
       expect(parseRule('FREQ=DAILY;INTERVAL=2;UNTIL=20261231T225959Z', s)!.until, DateTime(2026, 12, 31));
       expect(parseRule('FREQ=HOURLY', s), isNull);
@@ -297,7 +304,7 @@ void main() {
         'original_id': series, 'originalInstanceTime': DateTime(2026, 11, 19, 18).millisecondsSinceEpoch,
       });
       final odd = googleOnly('Stammtisch', DateTime(2026, 11, 10, 20), DateTime(2026, 11, 10, 23),
-          more: {'rrule': 'FREQ=MONTHLY;BYDAY=2TU', 'dtend': null, 'duration': 'P10800S'});
+          more: {'rrule': 'FREQ=DAILY;INTERVAL=2;BYDAY=TU', 'dtend': null, 'duration': 'P10800S'});
       dev.instanceList[odd] = [
         for (final d in [DateTime(2026, 11, 10, 20), DateTime(2026, 12, 8, 20)])
           (d.millisecondsSinceEpoch, d.add(const Duration(hours: 3)).millisecondsSinceEpoch),
@@ -317,6 +324,114 @@ void main() {
       dev.instanceList[odd] = dev.instanceList[odd]!.take(1).toList();
       await sync().run();
       expect(data.events.where((e) => e.title == 'Stammtisch').length, 1);
+    });
+
+    test('Google-Serien wie „2. Dienstag“ werden echte Serien – in beide Richtungen', () async {
+      final st = googleOnly('Stammtisch', DateTime(2026, 11, 10, 20), DateTime(2026, 11, 10, 20),
+          more: {'rrule': 'FREQ=MONTHLY;WKST=SU;BYDAY=2TU', 'dtend': null, 'duration': 'P10800S'});
+      final mf = ev('Monatsabschluss', DateTime(2026, 11, 30, 16), DateTime(2026, 11, 30, 17),
+          rec: parseRule('FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1', DateTime(2026, 11, 30)));
+      final r = await sync().run();
+      expect((r.imported, r.exported), (1, 1));
+      final a = data.byTitle('Stammtisch');
+      expect(a.recurrence!.byDay, [const NthWeekday(2, 2)]);
+      expect(a.isForeignInstance, isFalse);
+      final copy = dev.live().firstWhere((x) => x.title == 'Monatsabschluss');
+      expect(copy.rrule, 'FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1');
+      expect((await sync().run()).anything, isFalse);
+      // Sarah verschiebt die Serie in der App auf den 3. Dienstag → Google
+      a.recurrence = a.recurrence!.copyWith(byDay: [const NthWeekday(2, 3)]);
+      a.start = DateTime(2026, 11, 17, 20);
+      a.end = DateTime(2026, 11, 17, 23);
+      await data.saveEvent(a);
+      await sync().run();
+      expect(dev.row(st).rrule, 'FREQ=MONTHLY;BYDAY=3TU');
+      // Google ändert die Kopie auf „letzter Freitag“ → App
+      dev.rows[copy.id]!['rrule'] = 'FREQ=MONTHLY;BYDAY=-1FR';
+      dev.rows[copy.id]!['dtstart'] = DateTime(2026, 11, 27, 16).millisecondsSinceEpoch;
+      await sync().run();
+      expect(mf.recurrence!.byDay, [const NthWeekday(5, -1)]);
+      expect((await sync().run()).anything, isFalse);
+    });
+
+    test('Bisher einzeln übernommene Serie wird zur echten Serie', () async {
+      final st = googleOnly('Stammtisch', DateTime(2026, 11, 10, 20), DateTime(2026, 11, 10, 20),
+          more: {'rrule': 'FREQ=MONTHLY;BYDAY=2TU;X-ALT=1', 'dtend': null, 'duration': 'P10800S'});
+      dev.instanceList[st] = [
+        for (var m = 0; m < 9; m++)
+          (DateTime(2026, 11 + m, 1, 20).millisecondsSinceEpoch, DateTime(2026, 11 + m, 1, 23).millisecondsSinceEpoch),
+      ];
+      await sync().run();
+      expect(data.events.where((e) => e.title == 'Stammtisch').length, 9);
+      dev.rows[st]!['rrule'] = 'FREQ=MONTHLY;BYDAY=2TU'; // wie nach dem Update lesbar
+      final r = await sync().run();
+      expect(r.warnings, isEmpty, reason: 'kein Löschschutz – die Serie ersetzt die Einzeltermine');
+      final left = data.events.where((e) => e.title == 'Stammtisch').toList();
+      expect(left.length, 1);
+      expect(left.single.recurrence!.byDay, [const NthWeekday(2, 2)]);
+      expect((await sync().run()).anything, isFalse);
+    });
+
+    test('Erinnerungen in beide Richtungen; die der Kopien bestimmt die App', () async {
+      final cfg = GoogleSyncConfig(importCalendarKey: google.key, importFrom: const [1], defaultTarget: 1, reminders: true);
+      final g = googleOnly('Zahnarzt', DateTime(2026, 11, 18, 8), DateTime(2026, 11, 18, 9),
+          more: {'alerts': [30, 1440], 'hasAlarm': 1});
+      final t = ev('Elternabend', DateTime(2026, 11, 20, 19), DateTime(2026, 11, 20, 21))
+        ..reminders = [const Reminder(minutesBefore: 60), const Reminder(minutesBefore: 120, push: false, email: true)];
+      await sync(config: cfg).run();
+      final z = data.byTitle('Zahnarzt');
+      expect([for (final x in z.reminders) (x.minutesBefore, x.push)], [(1440, true), (30, true)]);
+      final copyId = dev.live().firstWhere((x) => x.title == 'Elternabend').id;
+      expect(dev.row(copyId).alerts, [60], reason: 'nur Push, E-Mail bleibt in der App');
+      expect((await sync(config: cfg).run()).anything, isFalse);
+
+      // Sarah ändert die Erinnerung in der App → Google
+      z.reminders = [const Reminder(minutesBefore: 10)];
+      await data.saveEvent(z);
+      await sync(config: cfg).run();
+      expect(dev.row(g).alerts, [10]);
+      // In Google geändert → App
+      await dev.setAlerts(g, [15]);
+      await sync(config: cfg).run();
+      expect(z.reminders.single.minutesBefore, 15);
+
+      // Google hängt an die Kopie eine Standard-Erinnerung → App bleibt, Kopie zurück
+      await dev.setAlerts(copyId, [30]);
+      final r = await sync(config: cfg).run();
+      expect(r.appChanged, isFalse);
+      expect(t.reminders.map((x) => x.minutesBefore), [60, 120]);
+      expect(dev.row(copyId).alerts, [60]);
+      expect((await sync(config: cfg).run()).anything, isFalse);
+
+      // Ohne Erinnerungs-Abgleich bleibt alles, wie es ist
+      await dev.setAlerts(g, [5]);
+      expect((await sync().run()).anything, isFalse);
+      expect(z.reminders.single.minutesBefore, 15);
+    });
+
+    test('Erinnerungen an Google-Termine anderer kommen nicht in den eigenen Google-Kalender', () async {
+      ev('Sarahs Zahnarzt', DateTime(2026, 11, 18, 8), DateTime(2026, 11, 18, 9))
+        ..extra['google'] = {'event': 4711, 'calendar': 9, 'owner': 'Sarah'}
+        ..reminders = [const Reminder(minutesBefore: 30)];
+      final cfg = GoogleSyncConfig(importCalendarKey: google.key, importFrom: const [1], defaultTarget: 1, reminders: true);
+      await sync(me: 'Sebastian', config: cfg).run();
+      expect(dev.live().single.alerts, isEmpty);
+      expect((await sync(me: 'Sebastian', config: cfg).run()).anything, isFalse);
+    });
+
+    test('Zeitraum „gesamte Vergangenheit“', () async {
+      ev('Hochzeit', DateTime(2019, 6, 1, 14), DateTime(2019, 6, 1, 23));
+      googleOnly('Abi-Treffen', DateTime(2021, 9, 4, 18), DateTime(2021, 9, 4, 23));
+      expect((await sync().run()).anything, isFalse, reason: 'Standard: 90 Tage');
+      final all = GoogleSyncConfig(importCalendarKey: google.key, importFrom: const [1], defaultTarget: 1, pastDays: null);
+      final r = await sync(config: all).run();
+      expect((r.exported, r.imported), (1, 1));
+      expect(data.byTitle('Abi-Treffen').calendarKey, google.key);
+      expect((await sync(config: all).run()).anything, isFalse);
+      // Zurück auf 90 Tage: nichts wird gelöscht
+      final back = await sync().run();
+      expect(back.deletedIn + back.deletedOut, 0);
+      expect(data.events.length, 2);
     });
 
     test('Zustand verloren: keine Dubletten, Zuordnung über Markierungen', () async {

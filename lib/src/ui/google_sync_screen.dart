@@ -121,6 +121,8 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
       defaultTarget: main.id,
       // Ausnahmen „nicht übertragen“ bleiben, Ziele in andere Kalender nicht.
       targets: {for (final e in s.googleTargets.entries) if (e.value < 0) e.key: null},
+      pastDays: s.googlePastDays < 0 ? null : s.googlePastDays,
+      reminders: s.googleReminders,
     );
     // Bestätigen – auf Wunsch erst ein Probelauf, der nichts ändert.
     while (true) {
@@ -155,7 +157,7 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
         if (mounted) setState(() => _busy = false);
       }
       if (!mounted) return;
-      final go = await _showResult('Probelauf – nichts wurde geändert', r, error, offerEnable: true);
+      final go = await _showResult('Probelauf – nichts wurde geändert', r, error, confirm: 'Einschalten');
       if (go == true) break;
       if (!mounted) return;
     }
@@ -175,7 +177,7 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
   }
 
   /// Ergebnis eines (Probe-)Laufs mit Liste der einzelnen Termine.
-  Future<bool?> _showResult(String title, GoogleSyncResult? r, String? error, {bool offerEnable = false}) =>
+  Future<bool?> _showResult(String title, GoogleSyncResult? r, String? error, {String? confirm}) =>
       showDialog<bool>(
         context: context,
         builder: (c) {
@@ -201,9 +203,9 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
               ]),
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(c, false), child: Text(offerEnable ? 'Zurück' : 'Schließen')),
-              if (offerEnable && error == null)
-                FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Einschalten')),
+              TextButton(onPressed: () => Navigator.pop(c, false), child: Text(confirm != null ? 'Zurück' : 'Schließen')),
+              if (confirm != null && error == null)
+                FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(confirm)),
             ],
           );
         },
@@ -253,6 +255,40 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
     state.settingsChanged();
     setState(() {});
     _syncNow();
+  }
+
+  static const _pastOptions = {90: '90 Tage zurück', 365: '1 Jahr zurück', 1095: '3 Jahre zurück', -1: 'Gesamte Vergangenheit'};
+
+  /// Zeitraum ändern; bei mehr Vergangenheit erst ein Probelauf mit Rückfrage.
+  Future<void> _setPastDays(int days) async {
+    final s = state.settings;
+    final old = s.googlePastDays;
+    if (days == old) return;
+    final more = days < 0 || (old >= 0 && days > old);
+    if (more) {
+      setState(() => _busy = true);
+      GoogleSyncResult? r;
+      String? error;
+      try {
+        r = await GoogleSyncService.preview(state.repo, s, GoogleSyncService.configFrom(s, pastDays: days));
+      } catch (e) {
+        error = '$e';
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+      if (!mounted) return;
+      final many = (r?.imported ?? 0) + (r?.exported ?? 0) > 400;
+      final ok = await _showResult(
+          many
+              ? 'Probelauf: viele Termine – das erste Hochladen dauert einige Stunden'
+              : 'Probelauf – nichts wurde geändert',
+          r,
+          error,
+          confirm: 'Übernehmen');
+      if (ok != true) return;
+    }
+    s.googlePastDays = days;
+    _changed();
   }
 
   Widget _targetDropdown(int value, ValueChanged<int> onChanged, {bool withDefault = false}) {
@@ -335,6 +371,50 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                       ),
                   ],
                 ),
+              header('Umfang'),
+              ListTile(
+                leading: const Icon(Icons.history_toggle_off),
+                title: Text('Zeitraum: ${_pastOptions[s.googlePastDays] ?? '${s.googlePastDays} Tage zurück'}'),
+                subtitle: const Text('Wie weit zurück in beide Richtungen abgeglichen wird; in die Zukunft immer alles.'),
+                trailing: const Icon(Icons.chevron_right),
+                enabled: !_busy,
+                onTap: () async {
+                  final v = await showDialog<int>(
+                    context: context,
+                    builder: (c) => SimpleDialog(
+                      title: const Text('Zeitraum'),
+                      children: [
+                        for (final e in _pastOptions.entries)
+                          SimpleDialogOption(
+                            onPressed: () => Navigator.pop(c, e.key),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Row(children: [
+                                Expanded(child: Text(e.value)),
+                                if (e.key == s.googlePastDays) const Icon(Icons.check, size: 18),
+                              ]),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                  if (v != null) await _setPastDays(v);
+                },
+              ),
+              SwitchListTile(
+                secondary: const Icon(Icons.notifications_none),
+                title: const Text('Erinnerungen abgleichen'),
+                subtitle: const Text('Benachrichtigungen (z. B. 30 Min. vorher) in beide Richtungen. Auf diesem '
+                    'Handy meldet sie dann der Google-Kalender, die App nicht zusätzlich. Erinnerungen an '
+                    'Google-Termine anderer bekommst du nicht.'),
+                value: s.googleReminders,
+                onChanged: _busy
+                    ? null
+                    : (v) {
+                        s.googleReminders = v;
+                        _changed();
+                      },
+              ),
               header('App → Handy-Kalender'),
               ListTile(
                 leading: const Icon(Icons.upload_outlined),
@@ -392,10 +472,10 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                 padding: EdgeInsets.fromLTRB(20, 12, 20, 0),
                 child: Text(
                   'Gut zu wissen: Ändern beide Seiten denselben Termin, gewinnt die Seite, aus der er stammt. '
-                  'Serien, die die App nicht abbilden kann (z. B. „jeden 2. Dienstag“), erscheinen als '
-                  'einzelne Termine und lassen sich nur im Google-Kalender ändern. Erinnerungen und Teilnehmer '
-                  'werden nicht übertragen. Verschwinden plötzlich viele Termine auf einer Seite, löscht der '
-                  'Abgleich nichts und meldet sich hier.',
+                  'Serien wie „jeden 2. Dienstag“ oder „letzter Freitag im Monat“ werden echte Serien; nur sehr '
+                  'seltene Regeln (z. B. stündlich) erscheinen als einzelne Termine, änderbar nur in Google. '
+                  'Teilnehmer und Terminfarben werden nicht übertragen. Verschwinden plötzlich viele Termine '
+                  'auf einer Seite, löscht der Abgleich nichts und meldet sich hier.',
                 ),
               ),
             ],

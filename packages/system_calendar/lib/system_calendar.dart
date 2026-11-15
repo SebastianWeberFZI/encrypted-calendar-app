@@ -47,6 +47,15 @@ class SystemCalendar {
   static Future<int> deleteEvent(int id) async =>
       await _ch.invokeMethod<int>('deleteEvent', {'id': id}) ?? 0;
 
+  /// Erinnerungen der Termine (`event_id`, `minutes`, `method`).
+  static Future<List<Map<String, Object?>>> reminders(List<int> eventIds) =>
+      eventIds.isEmpty ? Future.value([]) : _rows('reminders', {'ids': eventIds});
+
+  /// Ersetzt die Benachrichtigungen (Methode Standard/Hinweis/Alarm) eines
+  /// Termins durch [minutes]; E-Mail- und SMS-Erinnerungen bleiben.
+  static Future<void> setAlerts(int eventId, List<int> minutes) =>
+      _ch.invokeMethod<int>('setAlerts', {'eventId': eventId, 'minutes': minutes});
+
   static Future<List<Map<String, Object?>>> _rows(String method, [Map<String, Object?>? args]) async {
     final raw = await _ch.invokeMethod<List<Object?>>(method, args) ?? const [];
     return [

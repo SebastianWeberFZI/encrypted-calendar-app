@@ -8,6 +8,13 @@ import '../settings.dart';
 import 'device_calendar.dart';
 import 'google_sync.dart';
 
+/// Google-Termin einer anderen Person (ihre Erinnerungen gehören ihr)?
+bool isOthersGoogleEvent(CalendarEvent e, CalendarDef? cal, String me) {
+  final owner = e.googleOwner;
+  if (owner.isNotEmpty) return owner != me;
+  return cal != null && cal.isSynced && cal.syncOwner.isNotEmpty && cal.syncOwner != me;
+}
+
 /// Die Repo-Daten der App als Gegenstück für den Abgleich.
 class RepoCalendarData implements AppCalendarData {
   RepoCalendarData(this.repo);
@@ -32,11 +39,14 @@ class GoogleSyncService {
 
   static File stateFile(String baseDir) => File('$baseDir/google_sync/state.json');
 
-  static GoogleSyncConfig configFrom(LocalSettings s) => GoogleSyncConfig(
+  /// [pastDays] statt des eingestellten Zeitraums (-1 = alles), z. B. für den Probelauf.
+  static GoogleSyncConfig configFrom(LocalSettings s, {int? pastDays}) => GoogleSyncConfig(
         importCalendarKey: s.googleImportCalendar,
         importFrom: s.googleImportFrom,
         defaultTarget: s.googleDefaultTarget < 0 ? null : s.googleDefaultTarget,
         targets: {for (final e in s.googleTargets.entries) e.key: e.value < 0 ? null : e.value},
+        pastDays: (pastDays ?? s.googlePastDays) < 0 ? null : (pastDays ?? s.googlePastDays),
+        reminders: s.googleReminders,
       );
 
   /// Ein Durchlauf; null, wenn ausgeschaltet oder nicht möglich.
@@ -89,6 +99,14 @@ class GoogleSyncService {
         dryRun: true,
         extraCalendars: extra,
       ).run();
+
+  /// App-Termine, deren Erinnerungen auf diesem Handy der Google-Kalender
+  /// meldet (abgeglichen mit Erinnerungen) – die App meldet sie nicht doppelt.
+  static Future<Set<String>> alertedByGoogle(CalendarRepository repo, LocalSettings settings) async {
+    if (!supported || !settings.googleSync || !settings.googleReminders) return const {};
+    final st = await GoogleSyncState.load(stateFile(repo.baseDir));
+    return {...st.out.keys, for (final p in st.inn.values) p.app, for (final p in st.inst.values) p.app};
+  }
 
   /// Legt den App-Kalender für die übernommenen Termine an (z. B. „Sarah – Google“).
   static CalendarDef newImportCalendar(String sourceId, String owner) => CalendarDef(

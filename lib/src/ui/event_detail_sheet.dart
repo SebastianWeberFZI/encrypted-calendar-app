@@ -109,10 +109,13 @@ class EventDetailSheet extends StatelessWidget {
                         decoration: TextDecoration.underline)),
               )),
             if (e.reminders.isNotEmpty)
-              row(Icons.notifications_none, Text(e.reminders.map((r) {
-                final ch = [if (r.push) 'Push', if (r.email) 'E-Mail'].join(' + ');
-                return '${reminderLabel(r, allDay: e.allDay)} ($ch)';
-              }).join('\n'))),
+              row(Icons.notifications_none, Text([
+                ...e.reminders.map((r) {
+                  final ch = [if (r.push) 'Push', if (r.email) 'E-Mail'].join(' + ');
+                  return '${reminderLabel(r, allDay: e.allDay)} ($ch)';
+                }),
+                if (owner.isNotEmpty && owner != state.settings.userName) 'Erinnert nur $owner',
+              ].join('\n'))),
             if (e.description.isNotEmpty)
               row(Icons.notes, SelectableText(e.description)),
             if (e.url.isNotEmpty)

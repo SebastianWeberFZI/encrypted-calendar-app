@@ -247,12 +247,53 @@ enum RecurrenceFreq {
       RecurrenceFreq.values.where((f) => f.code == c).firstOrNull;
 }
 
-/// Vereinfachte RRULE: FREQ, INTERVAL, BYDAY (nur wöchentlich), UNTIL, COUNT.
+/// Kürzel der Wochentage in RRULEs (Index 0 = Montag).
+const kRuleDays = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
+
+/// Wochentag mit Ordnungszahl, z. B. „2. Dienstag“ (2, 2) oder „letzter
+/// Freitag“ (-1, 5); [n] = 0 heißt „jeder“ dieser Wochentage.
+class NthWeekday {
+  const NthWeekday(this.weekday, [this.n = 0]);
+
+  /// 1 = Montag … 7 = Sonntag.
+  final int weekday;
+  final int n;
+
+  String get code => '${n == 0 ? '' : n}${kRuleDays[weekday - 1]}';
+
+  static NthWeekday? tryParse(String s) {
+    final m = RegExp(r'^([+-]?\d{1,2})?(MO|TU|WE|TH|FR|SA|SU)$').firstMatch(s.trim().toUpperCase());
+    if (m == null) return null;
+    final n = m[1] == null ? 0 : int.parse(m[1]!.replaceFirst('+', ''));
+    if (n.abs() > 53) return null;
+    return NthWeekday(kRuleDays.indexOf(m[2]!) + 1, n);
+  }
+
+  @override
+  bool operator ==(Object other) => other is NthWeekday && other.weekday == weekday && other.n == n;
+
+  @override
+  int get hashCode => Object.hash(weekday, n);
+}
+
+/// Wiederholung nach RFC 5545 (RRULE), in dem Umfang, den Kalender wie Google
+/// anlegen: FREQ (täglich bis jährlich), INTERVAL, BYDAY (auch „2. Dienstag“),
+/// BYMONTHDAY (auch „letzter Tag“), BYMONTH, BYSETPOS, WKST, UNTIL, COUNT.
+///
+/// Einfache Regeln (nur [byWeekday]) werden wie bisher gespeichert, damit
+/// ältere App-Versionen sie lesen. Alles darüber hinaus steht als RRULE in
+/// `{"freq": "rrule", "rrule": "…"}` – ältere Versionen zeigen den Termin dann
+/// einmal an, statt ihn falsch zu wiederholen.
 class Recurrence {
   const Recurrence({
     required this.freq,
     this.interval = 1,
     this.byWeekday = const [],
+    this.byDay = const [],
+    this.byMonthDay = const [],
+    this.byMonth = const [],
+    this.bySetPos = const [],
+    this.weekStart = 1,
     this.until,
     this.count,
     this.extra = const {},
@@ -269,33 +310,196 @@ class Recurrence {
   /// 1 = Montag … 7 = Sonntag; nur bei wöchentlich, leer = Wochentag des Starts.
   final List<int> byWeekday;
 
+  /// Monatlich/jährlich: Wochentage, ggf. mit Ordnungszahl („2. Dienstag“).
+  final List<NthWeekday> byDay;
+
+  /// Tage im Monat (1 … 31, negativ vom Monatsende: -1 = letzter Tag).
+  final List<int> byMonthDay;
+
+  /// Monate (1 … 12).
+  final List<int> byMonth;
+
+  /// Auswahl aus den Tagen eines Zeitraums (1 = erster, -1 = letzter).
+  final List<int> bySetPos;
+
+  /// Erster Tag der Woche (1 = Montag); zählt nur bei wöchentlich mit Abstand.
+  final int weekStart;
+
   /// Letzter möglicher Tag (inklusive).
   final DateTime? until;
 
   /// Gesamtzahl der Vorkommen inkl. des ersten.
   final int? count;
 
-  Map<String, dynamic> toJson() => {
-        ...extra,
-        'freq': freq.code,
-        'interval': interval,
-        if (byWeekday.isNotEmpty) 'by_weekday': byWeekday,
-        if (until != null) 'until': isoDate(until!),
-        if (count != null) 'count': count,
-      };
+  /// Mit den Mitteln älterer App-Versionen darstellbar?
+  bool get isSimple =>
+      byDay.isEmpty && byMonthDay.isEmpty && byMonth.isEmpty && bySetPos.isEmpty && weekStart == 1;
+
+  /// Muster ohne Ende (FREQ … WKST), feste Reihenfolge.
+  String get pattern {
+    final parts = ['FREQ=${freq.code.toUpperCase()}'];
+    if (interval > 1) parts.add('INTERVAL=$interval');
+    if (byMonth.isNotEmpty) parts.add('BYMONTH=${(byMonth.toSet().toList()..sort()).join(',')}');
+    if (byMonthDay.isNotEmpty) parts.add('BYMONTHDAY=${(byMonthDay.toSet().toList()..sort()).join(',')}');
+    final days = freq == RecurrenceFreq.weekly
+        ? [for (final d in byWeekday.toSet().toList()..sort()) NthWeekday(d)]
+        : (byDay.toSet().toList()..sort((a, b) => a.n != b.n ? a.n.compareTo(b.n) : a.weekday.compareTo(b.weekday)));
+    if (days.isNotEmpty) parts.add('BYDAY=${days.map((d) => d.code).join(',')}');
+    if (bySetPos.isNotEmpty) parts.add('BYSETPOS=${(bySetPos.toSet().toList()..sort()).join(',')}');
+    if (weekStart != 1) parts.add('WKST=${kRuleDays[weekStart - 1]}');
+    return parts.join(';');
+  }
+
+  /// Muster (ohne UNTIL/COUNT) → Regel; null, wenn es Teile enthält, die die
+  /// App nicht abbilden kann (z. B. stündlich, BYWEEKNO, BYYEARDAY).
+  static Recurrence? tryParsePattern(String rule) {
+    final map = <String, String>{};
+    for (final p in rule.replaceFirst(RegExp(r'^RRULE:', caseSensitive: false), '').split(';')) {
+      final i = p.indexOf('=');
+      if (i <= 0) continue;
+      map[p.substring(0, i).trim().toUpperCase()] = p.substring(i + 1).trim().toUpperCase();
+    }
+    final parsedFreq = RecurrenceFreq.tryCode(map['FREQ']?.toLowerCase());
+    if (parsedFreq == null) return null;
+    var freq = parsedFreq;
+    const allowed = {'FREQ', 'INTERVAL', 'BYDAY', 'BYMONTHDAY', 'BYMONTH', 'BYSETPOS', 'WKST', 'COUNT', 'UNTIL'};
+    if (map.keys.any((k) => !allowed.contains(k))) return null;
+    final interval = int.tryParse(map['INTERVAL'] ?? '1') ?? 0;
+    if (interval < 1 || interval > 999) return null;
+    List<int>? ints(String key, int min, int max) {
+      final v = map[key];
+      if (v == null) return const [];
+      final out = <int>[];
+      for (final x in v.split(',')) {
+        final n = int.tryParse(x.trim().replaceFirst('+', ''));
+        if (n == null || n == 0 || n < min || n > max) return null;
+        out.add(n);
+      }
+      return out.toSet().toList()..sort();
+    }
+
+    final byMonthDay = ints('BYMONTHDAY', -31, 31);
+    final byMonth = ints('BYMONTH', 1, 12);
+    final bySetPos = ints('BYSETPOS', -366, 366);
+    if (byMonthDay == null || byMonth == null || bySetPos == null) return null;
+    final byDay = <NthWeekday>[];
+    for (final d in (map['BYDAY'] ?? '').split(',')) {
+      if (d.trim().isEmpty) continue;
+      final w = NthWeekday.tryParse(d);
+      if (w == null) return null;
+      byDay.add(w);
+    }
+    var weekStart = 1;
+    if (map['WKST'] != null) {
+      weekStart = kRuleDays.indexOf(map['WKST']!) + 1;
+      if (weekStart == 0) return null;
+    }
+    var byWeekday = <int>[];
+    switch (freq) {
+      case RecurrenceFreq.daily:
+        if (byMonthDay.isNotEmpty || byMonth.isNotEmpty || bySetPos.isNotEmpty) return null;
+        if (byDay.isNotEmpty) {
+          // „täglich, nur Mo–Fr“ = wöchentlich an diesen Tagen
+          if (interval != 1 || byDay.any((d) => d.n != 0)) return null;
+          freq = RecurrenceFreq.weekly;
+          byWeekday = [for (final d in byDay) d.weekday];
+        }
+      case RecurrenceFreq.weekly:
+        if (byMonthDay.isNotEmpty || byMonth.isNotEmpty || bySetPos.isNotEmpty) return null;
+        if (byDay.any((d) => d.n != 0)) return null;
+        byWeekday = [for (final d in byDay) d.weekday];
+      case RecurrenceFreq.monthly:
+        if (byDay.any((d) => d.n.abs() > 5)) return null;
+      case RecurrenceFreq.yearly:
+        break;
+    }
+    final monthlyOrYearly = freq == RecurrenceFreq.monthly || freq == RecurrenceFreq.yearly;
+    return Recurrence(
+      freq: freq,
+      interval: interval,
+      byWeekday: byWeekday.toSet().toList()..sort(),
+      byDay: monthlyOrYearly ? byDay : const [],
+      byMonthDay: byMonthDay,
+      byMonth: byMonth,
+      bySetPos: bySetPos,
+      weekStart: weekStart,
+    );
+  }
+
+  /// Gleichwertige, möglichst einfache Form für einen Beginn am [start]
+  /// (z. B. „monatlich am 12.“ ohne BYMONTHDAY, wenn der Termin am 12. beginnt).
+  Recurrence normalized(DateTime start) {
+    var days = byWeekday.toSet().toList()..sort();
+    var md = byMonthDay.toSet().toList()..sort();
+    var months = byMonth.toSet().toList()..sort();
+    var wkst = weekStart;
+    switch (freq) {
+      case RecurrenceFreq.daily:
+        wkst = 1;
+      case RecurrenceFreq.weekly:
+        if (days.length == 1 && days.first == start.weekday) days = [];
+        if (interval == 1 || days.length < 2) wkst = 1;
+      case RecurrenceFreq.monthly:
+        wkst = 1;
+        if (byDay.isEmpty && bySetPos.isEmpty && months.isEmpty && md.length == 1 && md.first == start.day) md = [];
+      case RecurrenceFreq.yearly:
+        wkst = 1;
+        if (byDay.isEmpty && bySetPos.isEmpty) {
+          if (months.length == 1 && months.first == start.month && (md.isEmpty || (md.length == 1 && md.first == start.day))) {
+            months = [];
+            md = [];
+          }
+        }
+    }
+    return Recurrence(
+      freq: freq,
+      interval: interval,
+      byWeekday: freq == RecurrenceFreq.weekly ? days : const [],
+      byDay: byDay,
+      byMonthDay: md,
+      byMonth: months,
+      bySetPos: bySetPos,
+      weekStart: wkst,
+      until: until,
+      count: count,
+      extra: extra,
+    );
+  }
+
+  Map<String, dynamic> toJson() => isSimple
+      ? {
+          ...extra,
+          'freq': freq.code,
+          'interval': interval,
+          if (byWeekday.isNotEmpty) 'by_weekday': byWeekday,
+          if (until != null) 'until': isoDate(until!),
+          if (count != null) 'count': count,
+        }
+      : {
+          'freq': 'rrule',
+          'rrule': pattern,
+          if (until != null) 'until': isoDate(until!),
+          if (count != null) 'count': count,
+        };
 
   static const _known = {'freq', 'interval', 'by_weekday', 'until', 'count'};
 
   /// null, wenn die Wiederholungsart unbekannt ist (neuere App-Version).
   static Recurrence? tryFromJson(Map<String, dynamic> j) {
+    final count = jIntOrNull(j['count']);
+    final until = jDate(j['until']);
+    if (jStrOrNull(j['freq']) == 'rrule') {
+      final r = tryParsePattern(jStr(j['rrule']));
+      if (r == null || unknownFields(j, const {'freq', 'rrule', 'until', 'count'}).isNotEmpty) return null;
+      return r.copyWith(until: until, count: count != null && count > 0 ? count : null);
+    }
     final freq = RecurrenceFreq.tryCode(jStrOrNull(j['freq']));
     if (freq == null) return null;
-    final count = jIntOrNull(j['count']);
     return Recurrence(
       freq: freq,
       interval: jInt(j['interval'], 1).clamp(1, 999),
       byWeekday: jInts(j['by_weekday']).where((d) => d >= 1 && d <= 7).toList(),
-      until: jDate(j['until']),
+      until: until,
       count: count != null && count > 0 ? count : null,
       extra: unknownFields(j, _known),
     );
@@ -309,6 +513,10 @@ class Recurrence {
     RecurrenceFreq? freq,
     int? interval,
     List<int>? byWeekday,
+    List<NthWeekday>? byDay,
+    List<int>? byMonthDay,
+    List<int>? byMonth,
+    List<int>? bySetPos,
     DateTime? until,
     bool clearUntil = false,
     int? count,
@@ -318,6 +526,11 @@ class Recurrence {
         freq: freq ?? this.freq,
         interval: interval ?? this.interval,
         byWeekday: byWeekday ?? this.byWeekday,
+        byDay: byDay ?? this.byDay,
+        byMonthDay: byMonthDay ?? this.byMonthDay,
+        byMonth: byMonth ?? this.byMonth,
+        bySetPos: bySetPos ?? this.bySetPos,
+        weekStart: weekStart,
         until: clearUntil ? null : (until ?? this.until),
         count: clearCount ? null : (count ?? this.count),
       );

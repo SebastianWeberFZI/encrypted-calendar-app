@@ -60,6 +60,13 @@ class DocStore {
   String? lastTreeSha;
   DateTime? lastSync;
 
+  /// Zeitpunkte (ms) der Schreibzugriffe der letzten Stunde – GitHub nimmt
+  /// nur begrenzt viele neue Dateien pro Stunde an.
+  final List<int> pushLog = [];
+
+  /// Nach einer Drosselung durch GitHub erst ab hier wieder senden.
+  DateTime? pushPausedUntil;
+
   /// SHA von meta.json beim letzten Prüfen und die dort angegebene
   /// Datenformat-Generation des Repos.
   String? metaSha;
@@ -110,6 +117,8 @@ class DocStore {
     lastSync = null;
     metaSha = null;
     repoSchema = 1;
+    pushLog.clear();
+    pushPausedUntil = null;
     if (await _stateFile.exists()) {
       _stateLoadedAt = (await _stateFile.stat()).modified;
       try {
@@ -149,6 +158,10 @@ class DocStore {
     lastTreeSha = tree is String ? tree : null;
     final ls = state['last_sync'];
     lastSync = ls is String ? DateTime.tryParse(ls) : null;
+    final pl = state['push_log'];
+    if (pl is List) pushLog.addAll(pl.whereType<num>().map((n) => n.toInt()));
+    final pu = state['push_paused_until'];
+    pushPausedUntil = pu is String ? DateTime.tryParse(pu) : null;
     final ms = state['meta_sha'];
     metaSha = ms is String ? ms : null;
     final rs = state['repo_schema'];
@@ -167,7 +180,7 @@ class DocStore {
 
   static const _stateKeys = {
     'remote_shas', 'pending', 'last_tree_sha', 'last_sync', 'meta_sha',
-    'repo_schema', 'unreadable', 'newer', 'reader',
+    'repo_schema', 'unreadable', 'newer', 'reader', 'push_log', 'push_paused_until',
   };
 
   /// true, wenn ein anderer Prozess (Hintergrund-Sync) den Zustand seit dem
@@ -233,6 +246,8 @@ class DocStore {
         'unreadable': unreadable,
         'newer': newer,
         'reader': kReaderGeneration,
+        'push_log': pushLog,
+        'push_paused_until': pushPausedUntil?.toIso8601String(),
       }, key);
       final tmp = File('${_stateFile.path}.tmp');
       await tmp.writeAsBytes(bytes, flush: true);
@@ -255,5 +270,7 @@ class DocStore {
     lastSync = null;
     metaSha = null;
     repoSchema = 1;
+    pushLog.clear();
+    pushPausedUntil = null;
   }
 }

@@ -9,6 +9,7 @@ import '../calendar_repository.dart';
 import '../models/calendar_models.dart';
 import '../models/occurrences.dart';
 import '../settings.dart';
+import '../sync/google_sync_service.dart';
 import '../ui/format.dart';
 
 /// Termin-Erinnerungen als lokale Android-Benachrichtigungen (exakte Alarme).
@@ -70,9 +71,13 @@ class NotificationService {
       final occ = repo.occurrences(
           now.subtract(const Duration(days: 2)), now.add(_horizon));
       final entries = <(DateTime, String, String, String)>[];
+      final viaGoogle = await GoogleSyncService.alertedByGoogle(repo, settings);
       for (final o in occ) {
         final e = o.event;
         if (e == null) continue;
+        // Erinnerungen an Google-Termine anderer gehören ihnen; Termine, die
+        // im Google-Kalender dieses Handys stehen, meldet der selbst.
+        if (isOthersGoogleEvent(e, o.calendar, settings.userName) || viaGoogle.contains(e.id)) continue;
         for (var i = 0; i < e.reminders.length; i++) {
           final r = e.reminders[i];
           if (!r.push) continue;

@@ -63,9 +63,17 @@ Danach:
 - Änderungen und Löschungen laufen in beide Richtungen (beim Öffnen, nach Änderungen, etwa jede Minute bei
   offener App und alle 15 Minuten im Hintergrund). Ändern beide Seiten denselben Termin, gewinnt die
   Herkunftsseite. Verschwinden plötzlich viele Termine auf einer Seite, wird nichts gelöscht.
-- Serien, die die App nicht abbilden kann (z. B. „jeden 2. Dienstag“), erscheinen als einzelne Termine
-  (30 Tage zurück bis gut ein Jahr voraus), änderbar nur in Google. Erinnerungen, Teilnehmer und
-  Terminfarben werden nicht übertragen; abgeglichen wird ab 90 Tagen in der Vergangenheit.
+- Serien wie in Google: „jeden 2. Dienstag“, „letzter Freitag im Monat“, „am 1. und 15.“, „letzter
+  Werktag“, „2. Sonntag im Mai“, „endet nach 10 Terminen“ werden echte Serien (änderbar, zuordenbar).
+  Nur sehr seltene Regeln (z. B. stündlich, Kalenderwochen) erscheinen als einzelne Termine (30 Tage zurück
+  bis gut ein Jahr voraus), änderbar nur in Google.
+- Erinnerungen (Benachrichtigungen) laufen in beide Richtungen, wenn eingeschaltet. Auf dem Handy mit dem
+  Abgleich meldet sie dann der Google-Kalender, die App nicht zusätzlich; Erinnerungen an Google-Termine
+  anderer bekommt man nicht. E-Mail-Erinnerungen bleiben getrennt. Teilnehmer und Terminfarben werden nicht
+  übertragen.
+- Zeitraum: standardmäßig ab 90 Tagen in der Vergangenheit, einstellbar bis „gesamte Vergangenheit“ (vorher
+  zeigt ein Probelauf die Menge). Jeder Termin ist eine Datei im Daten-Repo; GitHub nimmt nur einige hundert
+  neue Dateien pro Stunde an, die App sendet große Mengen deshalb gedrosselt über mehrere Stunden.
 - Jede Person kann das auf ihrem eigenen Handy einschalten (der Kalender heißt dann nach ihrem Profilnamen,
   z. B. „Sebastian – Google“). Die Google-Termine der anderen Person landen standardmäßig mit im eigenen
   Google-Kalender; unter „Je App-Kalender“ lässt sich das abschalten. Einen in Google geteilten Kalender

@@ -126,6 +126,15 @@ class LocalSettings {
   set googleTargets(Map<String, int> v) => _p.setString('gsync_targets', jsonEncode(v));
 
   /// Was die letzten Abgleiche geändert haben (neueste zuerst, gekürzt).
+  /// Wie weit zurück abgeglichen wird (Tage); -1 = gesamte Vergangenheit.
+  int get googlePastDays => _p.getInt('gsync_past_days') ?? 90;
+  set googlePastDays(int v) => _p.setInt('gsync_past_days', v);
+
+  /// Erinnerungen mit dem Handy-Kalender abgleichen (dann meldet sie dort
+  /// der Google-Kalender, die App nicht zusätzlich).
+  bool get googleReminders => _p.getBool('gsync_reminders') ?? true;
+  set googleReminders(bool v) => _p.setBool('gsync_reminders', v);
+
   List<String> get googleLog => _p.getStringList('gsync_log') ?? const [];
   set googleLog(List<String> v) => _p.setStringList('gsync_log', v);
 

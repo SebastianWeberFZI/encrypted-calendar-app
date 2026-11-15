@@ -580,10 +580,37 @@ class _RecurrenceSheetState extends State<_RecurrenceSheet> {
   DateTime? _until;
   int _count = 10;
 
+  /// Monatlich/jährlich: 'day' (am 12.), 'nth' (am 2. Dienstag), 'last' (am letzten Dienstag).
+  String _dayMode = 'day';
+
+  /// Regel, die sich hier nicht einstellen lässt (z. B. aus Google) – bleibt,
+  /// solange keine andere Wiederholung gewählt wird.
+  Recurrence? _custom;
+  bool _useCustom = false;
+
+  DateTime get _start => widget.start;
+  int get _nth => (_start.day - 1) ~/ 7 + 1;
+  bool get _isLastWeek => _start.day + 7 > DateTime(_start.year, _start.month + 1, 0).day;
+
   @override
   void initState() {
     super.initState();
     final r = widget.initial;
+    if (r != null && !r.isSimple) {
+      final w = r.byDay.length == 1 ? r.byDay.first : null;
+      final plain = w != null && w.weekday == _start.weekday && r.bySetPos.isEmpty && r.byMonthDay.isEmpty;
+      final monthOk = r.freq == RecurrenceFreq.monthly
+          ? r.byMonth.isEmpty
+          : r.freq == RecurrenceFreq.yearly && r.byMonth.length == 1 && r.byMonth.first == _start.month;
+      if (w != null && plain && monthOk && w.n == _nth && _nth <= 4) {
+        _dayMode = 'nth';
+      } else if (w != null && plain && monthOk && w.n == -1 && _isLastWeek) {
+        _dayMode = 'last';
+      } else {
+        _custom = r;
+        _useCustom = true;
+      }
+    }
     _freq = r?.freq;
     _interval = r?.interval ?? 1;
     _days = {...?r?.byWeekday};
@@ -597,15 +624,49 @@ class _RecurrenceSheetState extends State<_RecurrenceSheet> {
     }
   }
 
-  Recurrence? get _value => _freq == null
-      ? null
-      : Recurrence(
-          freq: _freq!,
-          interval: _interval,
-          byWeekday: _freq == RecurrenceFreq.weekly ? (_days.toList()..sort()) : const [],
-          until: _endMode == 'until' ? (_until ?? widget.start.add(const Duration(days: 90))) : null,
-          count: _endMode == 'count' ? _count : null,
-        );
+  Recurrence? get _value {
+    if (_freq == null) return null;
+    final until = _endMode == 'until' ? (_until ?? widget.start.add(const Duration(days: 90))) : null;
+    final count = _endMode == 'count' ? _count : null;
+    if (_useCustom && _custom != null) {
+      return _custom!.copyWith(
+          interval: _interval, until: until, clearUntil: until == null, count: count, clearCount: count == null);
+    }
+    final monthlyOrYearly = _freq == RecurrenceFreq.monthly || _freq == RecurrenceFreq.yearly;
+    final byDay = !monthlyOrYearly || _dayMode == 'day'
+        ? const <NthWeekday>[]
+        : [NthWeekday(_start.weekday, _dayMode == 'last' ? -1 : _nth)];
+    return Recurrence(
+      freq: _freq!,
+      interval: _interval,
+      byWeekday: _freq == RecurrenceFreq.weekly ? (_days.toList()..sort()) : const [],
+      byDay: byDay,
+      byMonth: _freq == RecurrenceFreq.yearly && byDay.isNotEmpty ? [_start.month] : const [],
+      until: until,
+      count: count,
+    );
+  }
+
+  Widget _dayModeChips() {
+    final wd = kWeekdays[_start.weekday - 1];
+    final inMonth = _freq == RecurrenceFreq.yearly ? ' im ${kMonths[_start.month - 1]}' : '';
+    final options = [
+      ('day', _freq == RecurrenceFreq.yearly ? 'Am ${_start.day}. ${kMonths[_start.month - 1]}' : 'Am ${_start.day}.'),
+      if (_nth <= 4) ('nth', 'Am $_nth. $wd$inMonth'),
+      if (_isLastWeek) ('last', 'Am letzten $wd$inMonth'),
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(spacing: 8, runSpacing: 8, children: [
+        for (final (mode, label) in options)
+          ChoiceChip(
+            label: Text(label),
+            selected: _dayMode == mode,
+            onSelected: (_) => setState(() => _dayMode = mode),
+          ),
+      ]),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -617,10 +678,35 @@ class _RecurrenceSheetState extends State<_RecurrenceSheet> {
           Text('Wiederholung', style: theme.textTheme.titleLarge),
           const SizedBox(height: 12),
           Wrap(spacing: 8, runSpacing: 8, children: [
-            ChoiceChip(label: const Text('Keine'), selected: _freq == null, onSelected: (_) => setState(() => _freq = null)),
+            ChoiceChip(
+                label: const Text('Keine'),
+                selected: _freq == null,
+                onSelected: (_) => setState(() {
+                      _freq = null;
+                      _useCustom = false;
+                    })),
+            if (_custom != null)
+              ChoiceChip(
+                  label: const Text('Wie bisher'),
+                  selected: _useCustom,
+                  onSelected: (_) => setState(() {
+                        _useCustom = true;
+                        _freq = _custom!.freq;
+                      })),
             for (final f in RecurrenceFreq.values)
-              ChoiceChip(label: Text(f.label), selected: _freq == f, onSelected: (_) => setState(() => _freq = f)),
+              ChoiceChip(
+                  label: Text(f.label),
+                  selected: !_useCustom && _freq == f,
+                  onSelected: (_) => setState(() {
+                        _freq = f;
+                        _useCustom = false;
+                      })),
           ]),
+          if (_useCustom && _value != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Text(recurrenceText(_value!, _start), style: theme.textTheme.bodyLarge),
+            ),
           if (_freq != null) ...[
             const SizedBox(height: 16),
             Row(children: [
@@ -632,7 +718,8 @@ class _RecurrenceSheetState extends State<_RecurrenceSheet> {
               IconButton(onPressed: () => setState(() => _interval++), icon: const Icon(Icons.add_circle_outline)),
               Text(_interval == 1 ? _freq!.unit : _freq!.unitPlural),
             ]),
-            if (_freq == RecurrenceFreq.weekly)
+            if (!_useCustom && (_freq == RecurrenceFreq.monthly || _freq == RecurrenceFreq.yearly)) _dayModeChips(),
+            if (!_useCustom && _freq == RecurrenceFreq.weekly)
               Wrap(spacing: 6, children: [
                 for (var d = 1; d <= 7; d++)
                   FilterChip(

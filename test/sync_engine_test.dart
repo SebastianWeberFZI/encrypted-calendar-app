@@ -87,6 +87,34 @@ void main() {
     expect(a.get('events/1.enc')!['title'], 'Version B');
   });
 
+  test('Viele Änderungen gehen gedrosselt raus; Drosselung durch GitHub pausiert das Senden', () async {
+    final (a, ea) = await device('a');
+    for (var i = 0; i < 70; i++) {
+      await a.put('events/$i.enc', doc('T$i', DateTime(2026, 1, 1)), persistState: false);
+    }
+    await a.saveState();
+    expect((await ea.sync()).pushed, SyncEngine.maxPushPerSync);
+    expect(a.pendingCount, 70 - SyncEngine.maxPushPerSync);
+    expect((await ea.sync()).pushed, 70 - SyncEngine.maxPushPerSync);
+    expect(a.pendingCount, 0);
+
+    // GitHub drosselt: kein Fehler, Empfangen geht weiter, Senden pausiert
+    final (b, eb) = await device('b');
+    await b.put('events/b.enc', doc('Von B', DateTime(2026, 1, 3)));
+    await eb.sync();
+    gh.throttle = true;
+    await a.put('events/x.enc', doc('X', DateTime(2026, 1, 2)));
+    final r = await ea.sync();
+    expect(r.pushed, 0);
+    expect(a.get('events/b.enc')!['title'], 'Von B');
+    expect(a.pendingCount, 1);
+    expect(a.pushPausedUntil, isNotNull);
+    gh.throttle = false;
+    expect((await ea.sync()).pushed, 0, reason: 'Pause läuft noch');
+    a.pushPausedUntil = DateTime.now().subtract(const Duration(seconds: 1));
+    expect((await ea.sync()).pushed, 1);
+  });
+
   test('Offline gespeicherte Änderungen bleiben in der Queue', () async {
     final (a, _) = await device('a');
     await a.put('events/1.enc', doc('Offline', DateTime(2026, 1, 1)));

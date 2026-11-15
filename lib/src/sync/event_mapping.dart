@@ -16,6 +16,7 @@ class EventNorm {
     required this.end,
     this.rule = '',
     this.exdates = const [],
+    this.alerts = const [],
   });
 
   final String title;
@@ -35,7 +36,12 @@ class EventNorm {
   /// Ausgelassene Tage einer Serie (yyyy-MM-dd, sortiert).
   final List<String> exdates;
 
-  String get key => jsonEncode([title, description, location, allDay, start, end, rule, exdates]);
+  /// Benachrichtigungen (Minuten vorher, sortiert) – nur wenn Erinnerungen
+  /// abgeglichen werden, sonst leer.
+  final List<int> alerts;
+
+  String get key =>
+      jsonEncode([title, description, location, allDay, start, end, rule, exdates, if (alerts.isNotEmpty) alerts]);
   String get hash => fnv64(key);
 
   @override
@@ -52,7 +58,6 @@ String fnv64(String s) {
   return h.toUnsigned(64).toRadixString(16);
 }
 
-const _days = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
 String _two(int v) => v.toString().padLeft(2, '0');
 String _ymd(DateTime d) => '${d.year}${_two(d.month)}${_two(d.day)}';
 String _utcStamp(DateTime d) {
@@ -71,18 +76,18 @@ DateTime utcDate(int ms) {
 
 // --------------------------------------------------------------- Wiederholung
 
+/// Muster der Regel; wöchentlich immer mit BYDAY (wie es Kalender schreiben).
+String _rulePattern(Recurrence n, DateTime start) =>
+    n.freq == RecurrenceFreq.weekly && n.byWeekday.isEmpty ? n.copyWith(byWeekday: [start.weekday]).pattern : n.pattern;
+
 /// Kanonische Regel aus der App-Regel (Reihenfolge fest, Standardwerte weggelassen).
 String canonicalRule(Recurrence r, DateTime start) {
-  final parts = ['FREQ=${r.freq.code.toUpperCase()}'];
-  if (r.interval > 1) parts.add('INTERVAL=${r.interval}');
-  if (r.freq == RecurrenceFreq.weekly) {
-    final days = (r.byWeekday.isEmpty ? [start.weekday] : (r.byWeekday.toSet().toList()..sort()));
-    parts.add('BYDAY=${days.map((d) => _days[d - 1]).join(',')}');
-  }
-  if (r.count != null) {
-    parts.add('COUNT=${r.count}');
-  } else if (r.until != null) {
-    parts.add('UNTIL=${_ymd(r.until!)}');
+  final n = r.normalized(start);
+  final parts = [_rulePattern(n, start)];
+  if (n.count != null) {
+    parts.add('COUNT=${n.count}');
+  } else if (n.until != null) {
+    parts.add('UNTIL=${_ymd(n.until!)}');
   }
   return parts.join(';');
 }
@@ -90,57 +95,26 @@ String canonicalRule(Recurrence r, DateTime start) {
 /// Regel für den Kalenderspeicher (UNTIL bei Terminen mit Uhrzeit als
 /// UTC-Zeitpunkt am Ende des letzten Tages).
 String providerRule(Recurrence r, DateTime start, bool allDay) {
-  final parts = ['FREQ=${r.freq.code.toUpperCase()}'];
-  if (r.interval > 1) parts.add('INTERVAL=${r.interval}');
-  if (r.freq == RecurrenceFreq.weekly) {
-    final days = (r.byWeekday.isEmpty ? [start.weekday] : (r.byWeekday.toSet().toList()..sort()));
-    parts.add('BYDAY=${days.map((d) => _days[d - 1]).join(',')}');
-  }
-  if (r.count != null) {
-    parts.add('COUNT=${r.count}');
-  } else if (r.until != null) {
-    final u = r.until!;
+  final n = r.normalized(start);
+  final parts = [_rulePattern(n, start)];
+  if (n.count != null) {
+    parts.add('COUNT=${n.count}');
+  } else if (n.until != null) {
+    final u = n.until!;
     parts.add(allDay ? 'UNTIL=${_ymd(u)}' : 'UNTIL=${_utcStamp(DateTime(u.year, u.month, u.day, 23, 59, 59))}');
   }
   return parts.join(';');
 }
 
 /// RRULE aus dem Kalenderspeicher → App-Regel; null, wenn die App sie nicht
-/// abbilden kann (z. B. „jeden 2. Dienstag“, mehrere Monatstage).
+/// abbilden kann (z. B. stündlich, BYWEEKNO, BYYEARDAY).
 Recurrence? parseRule(String rrule, DateTime start) {
+  final r = Recurrence.tryParsePattern(rrule);
+  if (r == null) return null;
   final map = <String, String>{};
   for (final p in rrule.replaceFirst(RegExp(r'^RRULE:', caseSensitive: false), '').split(';')) {
     final i = p.indexOf('=');
-    if (i <= 0) continue;
-    map[p.substring(0, i).trim().toUpperCase()] = p.substring(i + 1).trim().toUpperCase();
-  }
-  final freq = RecurrenceFreq.tryCode(map['FREQ']?.toLowerCase());
-  if (freq == null) return null;
-  const allowed = {'FREQ', 'INTERVAL', 'BYDAY', 'COUNT', 'UNTIL', 'WKST', 'BYMONTHDAY', 'BYMONTH'};
-  if (map.keys.any((k) => !allowed.contains(k))) return null;
-  final interval = int.tryParse(map['INTERVAL'] ?? '1') ?? 0;
-  if (interval < 1) return null;
-  var byWeekday = <int>[];
-  final byDay = map['BYDAY'];
-  if (byDay != null) {
-    if (freq != RecurrenceFreq.weekly) return null;
-    for (final d in byDay.split(',')) {
-      final i = _days.indexOf(d.trim());
-      if (i < 0) return null; // z. B. „2TU“
-      byWeekday.add(i + 1);
-    }
-    byWeekday = byWeekday.toSet().toList()..sort();
-    // Leer und „nur der Wochentag des Beginns“ bedeuten dasselbe.
-    if (byWeekday.length == 1 && byWeekday.first == start.weekday) byWeekday = [];
-  }
-  final byMonthDay = map['BYMONTHDAY'];
-  if (byMonthDay != null) {
-    if (freq != RecurrenceFreq.monthly && freq != RecurrenceFreq.yearly) return null;
-    if (int.tryParse(byMonthDay) != start.day) return null;
-  }
-  final byMonth = map['BYMONTH'];
-  if (byMonth != null) {
-    if (freq != RecurrenceFreq.yearly || int.tryParse(byMonth) != start.month) return null;
+    if (i > 0) map[p.substring(0, i).trim().toUpperCase()] = p.substring(i + 1).trim().toUpperCase();
   }
   int? count;
   DateTime? until;
@@ -152,7 +126,7 @@ Recurrence? parseRule(String rrule, DateTime start) {
     if (until == null) return null;
     until = DateTime(until.year, until.month, until.day);
   }
-  return Recurrence(freq: freq, interval: interval, byWeekday: byWeekday, until: until, count: count);
+  return r.copyWith(until: until, count: count).normalized(start);
 }
 
 /// „20261112“, „20261112T090000“ oder „20261112T090000Z“ → lokale Zeit.
@@ -224,8 +198,12 @@ int? parseDuration(String? s) {
 
 // --------------------------------------------------------------- Formen
 
-/// Form eines App-Termins.
-EventNorm normFromApp(CalendarEvent e) {
+/// Minuten der Push-Erinnerungen eines App-Termins (sortiert, ohne doppelte).
+List<int> pushAlerts(CalendarEvent e) =>
+    {for (final r in e.reminders) if (r.push && r.minutesBefore >= 0) r.minutesBefore}.toList()..sort();
+
+/// Form eines App-Termins; [alerts] nur, wenn Erinnerungen abgeglichen werden.
+EventNorm normFromApp(CalendarEvent e, {List<int> alerts = const []}) {
   final r = e.recurrence;
   final rule = r == null ? '' : canonicalRule(r, e.start);
   return EventNorm(
@@ -237,6 +215,7 @@ EventNorm normFromApp(CalendarEvent e) {
     end: e.allDay ? isoDate(e.end) : '${_minute(e.end.millisecondsSinceEpoch)}',
     rule: rule,
     exdates: rule.isEmpty ? const [] : ({for (final d in e.exdates) isoDate(d)}.toList()..sort()),
+    alerts: alerts,
   );
 }
 
@@ -262,7 +241,7 @@ EventNorm normFromApp(CalendarEvent e) {
 /// Form eines Termins aus dem Kalenderspeicher; [exceptions] sind dessen
 /// Ausnahmen (verschobene oder abgesagte Vorkommen) – ihr ursprünglicher Tag
 /// zählt als ausgelassen.
-EventNorm normFromRow(DeviceEvent r, [Iterable<DeviceEvent> exceptions = const []]) {
+EventNorm normFromRow(DeviceEvent r, [Iterable<DeviceEvent> exceptions = const [], bool withAlerts = false]) {
   final (s, e) = rowTimes(r);
   var rule = '';
   var ex = <String>[];
@@ -286,6 +265,7 @@ EventNorm normFromRow(DeviceEvent r, [Iterable<DeviceEvent> exceptions = const [
     end: r.allDay ? isoDate(e) : '${_minute(e.millisecondsSinceEpoch)}',
     rule: rule,
     exdates: ex,
+    alerts: withAlerts ? r.alerts : const [],
   );
 }
 
@@ -298,8 +278,18 @@ bool rowSupported(DeviceEvent r) {
 }
 
 /// Übernimmt Inhalt und Zeiten aus dem Kalenderspeicher in einen App-Termin
-/// (Farbe, Erinnerungen, Link und unbekannte Felder bleiben).
-void applyRowToApp(CalendarEvent target, DeviceEvent r, [Iterable<DeviceEvent> exceptions = const []]) {
+/// (Farbe, Link und unbekannte Felder bleiben; Erinnerungen nur mit [alerts]:
+/// dann ersetzen sie die Push-Erinnerungen, reine E-Mail-Erinnerungen bleiben).
+void applyRowToApp(CalendarEvent target, DeviceEvent r,
+    [Iterable<DeviceEvent> exceptions = const [], List<int>? alerts]) {
+  if (alerts != null) {
+    final mail = {for (final x in target.reminders) if (x.email) x.minutesBefore};
+    target.reminders = [
+      for (final m in alerts) Reminder(minutesBefore: m, push: true, email: mail.contains(m)),
+      for (final m in mail)
+        if (!alerts.contains(m)) Reminder(minutesBefore: m, push: false, email: true),
+    ]..sort((a, b) => b.minutesBefore.compareTo(a.minutesBefore));
+  }
   final (s, e) = rowTimes(r);
   target
     ..title = r.title.trim()
