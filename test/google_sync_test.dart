@@ -330,7 +330,7 @@ void main() {
       expect(data.events.length, 2);
     });
 
-    test('Kalender „nicht übertragen“ entfernt die Kopien; Verschieben aus „Sarah – Google“', () async {
+    test('Kalender „nicht übertragen“ entfernt die Kopien; Zuordnen aus „Sarah – Google“', () async {
       ev('A', DateTime(2026, 11, 20, 9), DateTime(2026, 11, 20, 10));
       final g = googleOnly('G', DateTime(2026, 11, 22, 9), DateTime(2026, 11, 22, 10));
       await sync().run();
@@ -340,15 +340,77 @@ void main() {
       expect(r.deletedOut, 1);
       expect(dev.live().map((x) => x.title), ['G']);
 
-      // Sarah verschiebt den Google-Termin in „Gemeinsam“ → wird App-Termin mit Kopie
+      // Sarah ordnet den Google-Termin „Gemeinsam“ zu → bleibt mit Google verbunden
       final e = data.byTitle('G')..calendarId = familie.id;
+      expect(e.googleOwner, 'Sarah');
       await data.saveEvent(e);
-      r = await sync().run();
+      r = await sync(config: off).run();
+      expect(r.anything, isFalse, reason: r.summary);
+      expect(dev.rows[g]!['deleted'], 0, reason: 'das Original bleibt');
+      expect(dev.live().map((x) => x.title), ['G'], reason: 'keine zusätzliche Kopie');
+
+      // Änderungen laufen weiter in beide Richtungen
+      dev.rows[g]!['title'] = 'G in Google geändert';
+      r = await sync(config: off).run();
+      expect((e.title, e.calendarKey, r.updatedIn), ('G in Google geändert', familie.key, 1));
+      e.location = 'Rathaus';
+      await data.saveEvent(e);
+      await sync(config: off).run();
+      expect(dev.row(g).location, 'Rathaus');
+
+      // Sebastian (ältere App) ändert ihn → zurückgesetzt, bleibt in „Gemeinsam“
+      e.title = 'Von Sebastian';
+      e.updatedBy = 'Sebastian';
+      r = await sync(config: off).run();
+      expect((e.title, e.calendarKey, r.reverted), ('G in Google geändert', familie.key, 1));
+
+      // Zustand verloren: findet ihn auch in „Gemeinsam“ wieder, keine Dublette
+      File('${tmp.path}/sub/state.json').deleteSync();
+      r = await sync(config: off).run();
+      expect(r.anything, isFalse, reason: r.summary);
+      expect(data.events.where((x) => x.title == 'G in Google geändert').length, 1);
+
+      // Zurück nach „Sarah – Google“ und dort von Sarah gelöscht → auch in Google weg
+      e.calendarId = google.id;
+      await data.saveEvent(e);
+      await data.deleteEvent(e);
+      await GoogleSyncState.addTombstone(File('${tmp.path}/sub/state.json'), e.id);
+      await sync(config: off).run();
       expect(dev.rows[g]!['deleted'], 1);
-      expect(e.extra.containsKey('google'), isFalse);
-      final copy = dev.live().singleWhere((x) => x.title == 'G');
-      expect(copy.customAppUri, 'kalender://event/${e.id}');
-      expect(data.inCal(google), isEmpty);
+    });
+
+    test('Ältere Übernahme ohne Besitzerin wird ergänzt, auch nach dem Zuordnen', () async {
+      final g = googleOnly('G', DateTime(2026, 11, 22, 9), DateTime(2026, 11, 22, 10));
+      await sync().run();
+      final e = data.byTitle('G');
+      e.extra['google'] = {'event': g, 'calendar': 1}; // wie Version 0.1.4
+      e.calendarId = familie.id;
+      final r = await sync().run();
+      expect(e.googleOwner, 'Sarah');
+      expect(dev.rows[g]!['deleted'], 0);
+      expect(r.exported, 0);
+    });
+
+    test('Fremder Google-Termin in „Gemeinsam“: Kopie für Sebastian, Änderungen dort zurückgesetzt', () async {
+      final e = ev('Sarahs Zahnarzt', DateTime(2026, 11, 18, 8), DateTime(2026, 11, 18, 9))
+        ..extra['google'] = {'event': 4711, 'calendar': 9, 'owner': 'Sarah'};
+      final r = await sync(me: 'Sebastian').run();
+      expect(r.exported, 1);
+      final copy = dev.live().single;
+      expect(copy.title, 'Sarahs Zahnarzt');
+      dev.rows[copy.id]!['title'] = 'Von Sebastian in Google geändert';
+      final r2 = await sync(me: 'Sebastian').run();
+      expect(e.title, 'Sarahs Zahnarzt', reason: 'nur Sarah ändert ihn');
+      expect(dev.row(copy.id).title, 'Sarahs Zahnarzt');
+      expect((r2.updatedIn, r2.updatedOut), (0, 1));
+    });
+
+    test('Neu in „Sarah – Google“ angelegt (ohne Original) → landet als Kopie in Google', () async {
+      final e = ev('Direkt angelegt', DateTime(2026, 11, 24, 9), DateTime(2026, 11, 24, 10), cal: google);
+      final r = await sync().run();
+      expect(r.exported, 1);
+      expect(dev.live().single.customAppUri, 'kalender://event/${e.id}');
+      expect((await sync().run()).anything, isFalse);
     });
 
     test('Probelauf ändert nichts, zeigt aber jeden Termin', () async {

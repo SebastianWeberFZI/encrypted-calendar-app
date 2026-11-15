@@ -394,12 +394,19 @@ class CalendarEvent {
   /// Einzelnes Vorkommen einer Serie, die die App nicht abbilden kann –
   /// änderbar nur im Ursprungskalender.
   bool get isForeignInstance => google?['instance'] != null;
+
+  /// Wem der übernommene Termin gehört – nur sie ändert ihn, auch wenn er
+  /// einem anderen Kalender zugeordnet ist ('' = ältere Übernahme ohne Angabe).
+  String get googleOwner => jStr(google?['owner']);
   Duration get duration => end.difference(start);
   bool get isMultiDay => dateOnly(end).isAfter(dateOnly(start));
 
-  CalendarEvent copy({String? id, String? title}) =>
-      CalendarEvent.fromJson({...toJson(), 'id': id ?? this.id,
-        'title': ?title}, sourceId);
+  CalendarEvent copy({String? id, String? title}) {
+    final c = CalendarEvent.fromJson({...toJson(), 'id': id ?? this.id, 'title': ?title}, sourceId);
+    // Eine Kopie mit neuer ID ist kein übernommener Google-Termin mehr.
+    if (id != null && id != this.id) c.extra.remove('google');
+    return c;
+  }
 
   Map<String, dynamic> toJson() => {
         ...extra,

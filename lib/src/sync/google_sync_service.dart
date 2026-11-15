@@ -101,7 +101,9 @@ class GoogleSyncService {
 
   /// Merkt sich das Löschen eines übernommenen Termins durch die Besitzerin.
   static Future<void> noteDeleted(CalendarRepository repo, LocalSettings settings, CalendarEvent e) async {
-    if (!settings.googleSync || e.google == null || e.calendarKey != settings.googleImportCalendar) return;
+    if (!settings.googleSync || e.google == null) return;
+    final owner = e.googleOwner;
+    if (owner.isNotEmpty ? owner != settings.userName : e.calendarKey != settings.googleImportCalendar) return;
     await GoogleSyncState.addTombstone(stateFile(repo.baseDir), e.id);
   }
 

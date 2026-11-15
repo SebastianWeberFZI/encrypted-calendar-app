@@ -28,6 +28,10 @@ class EventDetailSheet extends StatelessWidget {
     final color = Color(occ.color);
     final cal = occ.calendar;
     final source = state.repo.source(e.sourceId);
+    final canAssign = e.google != null && !e.isForeignInstance && state.canEdit(e) &&
+        state.assignableCalendars(e).length > 1;
+    final origin = cal != null && cal.isSynced ? cal.syncLabel : 'Google';
+    final owner = state.lockedBy(e);
     final when = occ.allDay
         ? (occ.isMultiDay
             ? '${fmtDateLong(occ.startDay)} –\n${fmtDateLong(occ.endDay)}'
@@ -79,8 +83,23 @@ class EventDetailSheet extends StatelessWidget {
                 Text(occ.colorLabel!),
               ])),
             if (cal != null)
-              row(Icons.calendar_today_outlined,
-                  Text('${cal.name}${source != null && state.sources.length > 1 ? '  ·  ${source.config.label}' : ''}')),
+              row(Icons.calendar_today_outlined, Row(children: [
+                Expanded(
+                  child: Text(
+                      '${cal.name}${source != null && state.sources.length > 1 ? '  ·  ${source.config.label}' : ''}'),
+                ),
+                if (canAssign)
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact, padding: const EdgeInsets.symmetric(horizontal: 8)),
+                    icon: const Icon(Icons.drive_file_move_outline, size: 18),
+                    label: const Text('Zuordnen'),
+                    onPressed: () => _assign(context, e),
+                  ),
+              ])),
+            if (e.google != null && !e.isForeignInstance && state.canEdit(e))
+              row(Icons.sync_alt, Text('Aus deinem $origin-Kalender – Änderungen laufen in beide Richtungen.',
+                  style: theme.textTheme.bodySmall)),
             if (e.location.isNotEmpty)
               row(Icons.place_outlined, InkWell(
                 onTap: () => _openMap(e.location),
@@ -119,9 +138,8 @@ class EventDetailSheet extends StatelessWidget {
                   Expanded(
                     child: Text(
                       e.isForeignInstance
-                          ? 'Teil einer Serie aus dem ${cal?.syncLabel ?? 'Google'}-Kalender – nur dort änderbar.'
-                          : 'Aus dem ${cal?.syncLabel ?? 'Google'}-Kalender von ${cal?.syncOwner ?? ''} – '
-                              'nur ${cal?.syncOwner ?? ''} kann ihn ändern.',
+                          ? 'Teil einer Serie aus dem $origin-Kalender – nur dort änderbar.'
+                          : 'Aus dem $origin-Kalender von $owner – nur $owner kann ihn ändern.',
                       style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
                     ),
                   ),
@@ -164,6 +182,46 @@ class EventDetailSheet extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Übernommenen Google-Termin einem anderen App-Kalender zuordnen.
+  Future<void> _assign(BuildContext context, CalendarEvent e) async {
+    final cals = state.assignableCalendars(e);
+    final picked = await showDialog<CalendarDef>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: const Text('Welchem Kalender zuordnen?'),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+            child: Text('Der Termin bleibt mit Google verbunden: Änderungen laufen weiter in beide '
+                'Richtungen, ändern kannst nur du. Sehen können ihn alle, die die Datenquelle '
+                'des Kalenders nutzen.${e.recurrence != null ? ' Gilt für die ganze Serie.' : ''}'),
+          ),
+          for (final x in cals)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(c, x),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(children: [
+                  CircleAvatar(backgroundColor: Color(x.color), radius: 7),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text('${x.emoji.isEmpty ? '' : '${x.emoji} '}${x.name}'
+                        '${state.sources.length > 1 ? '  ·  ${state.repo.source(x.sourceId)?.config.label ?? ''}' : ''}'),
+                  ),
+                  if (x.key == e.calendarKey) const Icon(Icons.check, size: 18),
+                ]),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (picked == null || picked.key == e.calendarKey || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    Navigator.pop(context);
+    await state.moveToCalendar(e, picked);
+    messenger.showSnackBar(SnackBar(content: Text('„${e.title}“ ist jetzt im Kalender „${picked.name}“.')));
   }
 
   Future<void> _delete(BuildContext context, CalendarEvent e) async {

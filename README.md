@@ -57,6 +57,9 @@ Danach:
 - Termine aus dem Google-Kalender erscheinen im App-Kalender „<Name> – Google“ (z. B. „Sarah – Google“).
   Alle, die die Datenquelle nutzen, sehen sie; ändern kann sie nur die Besitzerin – Änderungen anderer
   werden zurückgesetzt.
+- Einzelne Google-Termine kann die Besitzerin einem anderen App-Kalender zuordnen (Termin antippen →
+  „Zuordnen“, oder im Bearbeiten-Dialog den Kalender wechseln). Sie bleiben mit dem Original in Google
+  verbunden; Änderungen laufen weiter in beide Richtungen, das Original wird nicht ersetzt.
 - Änderungen und Löschungen laufen in beide Richtungen (beim Öffnen, nach Änderungen, etwa jede Minute bei
   offener App und alle 15 Minuten im Hintergrund). Ändern beide Seiten denselben Termin, gewinnt die
   Herkunftsseite. Verschwinden plötzlich viele Termine auf einer Seite, wird nichts gelöscht.
@@ -68,7 +71,7 @@ Danach:
   Google-Kalender; unter „Je App-Kalender“ lässt sich das abschalten. Einen in Google geteilten Kalender
   sollte nur eine Person übernehmen, sonst erscheint er doppelt.
 - Zuordnungen liegen nur auf diesem Handy (`google_sync/state.json`); übernommene Termine tragen im Repo
-  das Feld `google` (ID im Handy-Kalender), der Kalender das Feld `sync` (Besitzerin).
+  das Feld `google` (ID im Handy-Kalender, Besitzerin), der Kalender das Feld `sync` (Besitzerin).
 
 ## Daten-Repo
 ```

@@ -275,6 +275,28 @@ class GoogleSync {
     final appEvents = List.of(data.events);
     final appById = {for (final e in appEvents) e.id: e};
     final importKey = importCal?.key ?? config.importCalendarKey;
+    final calByKey = {for (final c in data.calendars) c.key: c};
+
+    // Übernommene Termine dieses Handys – egal, welchem App-Kalender sie
+    // inzwischen zugeordnet sind. Sie bleiben mit dem Original verbunden.
+    final linked = {for (final p in state.inn.values) p.app, for (final p in state.inst.values) p.app};
+    bool mine(CalendarEvent e) {
+      if (e.google == null) return false;
+      final owner = e.googleOwner;
+      return owner.isNotEmpty ? owner == me : e.calendarKey == importKey;
+    }
+
+    bool isImport(CalendarEvent e) => linked.contains(e.id) || mine(e);
+
+    // Darf ich diesen Termin nicht ändern (Google-Termin einer anderen Person)?
+    bool lockedForMe(CalendarEvent e) {
+      final owner = e.googleOwner;
+      if (owner.isNotEmpty) return owner != me;
+      return !(calByKey[e.calendarKey]?.editableBy(me) ?? true);
+    }
+
+    Map<String, dynamic> origin(int event, int calendar, [int? instance]) =>
+        {'event': event, 'calendar': calendar, 'instance': ?instance, 'owner': me};
 
     // Löschungen, weil etwas auf der anderen Seite verschwand (mit Schutz)
     final vanishedInGoogle = <(CalendarEvent, void Function())>[];
@@ -293,8 +315,8 @@ class GoogleSync {
     final claimed = <int>{};
     for (final e in appEvents) {
       final pair = state.out[e.id];
-      if (e.calendarKey == importKey) {
-        // Liegt jetzt im Kalender der übernommenen Termine: keine Kopie mehr.
+      if (isImport(e)) {
+        // Übernommener Termin (Original im Handy-Kalender): keine Kopie.
         if (pair != null) {
           if (validTarget(pair.cal) && all[pair.row]?.deleted == false) await api.delete(pair.row);
           state.out.remove(e.id);
@@ -357,7 +379,8 @@ class GoogleSync {
         p.hash = desired.hash;
         continue;
       }
-      final appChanged = desired.hash != p.hash;
+      // Termine, die ich nicht ändern darf: Änderungen an der Kopie zurücksetzen.
+      final appChanged = desired.hash != p.hash || lockedForMe(e);
       if (appChanged || actual.rule.startsWith('RAW:')) {
         await api.update(row.id, rowValues(e));
         p.hash = desired.hash;
@@ -406,7 +429,7 @@ class GoogleSync {
         for (final r in candidates)
           if (!r.isException && r.recurring && !rowSupported(r)) r.id,
       };
-      final importApp = {for (final e in appEvents) if (e.calendarKey == importKey) e.id: e};
+      final importApp = {for (final e in appEvents) if (mine(e)) e.id: e};
 
       CalendarEvent newImported(String? id) => CalendarEvent(
             id: id,
@@ -438,7 +461,7 @@ class GoogleSync {
           } else {
             final ne = newImported(null);
             applyRowToApp(ne, r, ex);
-            ne.extra['google'] = {'event': r.id, 'calendar': r.calendarId};
+            ne.extra['google'] = origin(r.id, r.calendarId);
             await data.saveEvent(ne);
             state.inn[r.id] = InPair(ne.id, g.hash);
             res.imported++;
@@ -457,7 +480,7 @@ class GoogleSync {
             // Gelöscht, aber nicht von der Besitzerin: wiederherstellen.
             final ne = newImported(p.app);
             applyRowToApp(ne, r, ex);
-            ne.extra['google'] = {'event': r.id, 'calendar': r.calendarId};
+            ne.extra['google'] = origin(r.id, r.calendarId);
             await data.saveEvent(ne);
             p.hash = g.hash;
             res.reverted++;
@@ -465,21 +488,14 @@ class GoogleSync {
           }
           continue;
         }
-        if (ae.calendarKey != importKey) {
-          // In einen App-Kalender verschoben: ist jetzt ein App-Termin und
-          // kommt als Kopie zurück; das Original im Handy-Kalender entfällt.
-          await api.delete(r.id);
-          state.inn.remove(r.id);
-          final x = dryRun ? ae.copy() : ae;
-          x.extra.remove('google');
-          await data.saveEvent(x);
-          res.deletedOut++;
-          res.note('→ Google-Original ersetzt (in App-Kalender verschoben): ${label(ae)}');
-          continue;
-        }
+        // Auch einem anderen App-Kalender zugeordnet bleibt er verbunden.
+        // Ältere Übernahmen bekommen die Besitzerin nachgetragen.
+        final addOwner = ae.googleOwner.isEmpty && !dryRun;
+        if (addOwner) ae.extra['google'] = {...?ae.google, 'owner': me};
         final a = normFromApp(ae);
         if (a.hash == g.hash) {
           p.hash = g.hash;
+          if (addOwner) await data.saveEvent(ae);
           continue;
         }
         final googleChanged = g.hash != p.hash;
@@ -497,6 +513,7 @@ class GoogleSync {
           }
         } else {
           await api.update(r.id, rowValuesFromApp(ae));
+          if (addOwner) await data.saveEvent(ae);
           p.hash = a.hash;
           res.updatedOut++;
           res.note('→ Google geändert: ${label(ae)}');
@@ -532,7 +549,7 @@ class GoogleSync {
           }
           final target = ae == null ? newImported(p?.app) : (dryRun ? ae.copy() : ae);
           applyRowToApp(target, single);
-          target.extra['google'] = {'event': id, 'calendar': r.calendarId, 'instance': b};
+          target.extra['google'] = origin(id, r.calendarId, b);
           await data.saveEvent(target);
           state.inst[key] = InPair(target.id, g.hash);
           if (ae == null && p == null) {

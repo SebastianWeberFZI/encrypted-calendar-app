@@ -385,7 +385,8 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                 subtitle: Text(importCal == null
                     ? 'Abgleich aus- und wieder einschalten, um ihn neu anzulegen.'
                     : '${state.repo.source(importCal.sourceId)?.config.label ?? ''} · alle sehen sie, '
-                        'nur du (${s.userName}) kannst sie ändern'),
+                        'nur du (${s.userName}) kannst sie ändern. Einzelne Termine lassen sich einem anderen '
+                        'Kalender zuordnen (Termin antippen → Zuordnen) und bleiben mit Google verbunden.'),
               ),
               const Padding(
                 padding: EdgeInsets.fromLTRB(20, 12, 20, 0),

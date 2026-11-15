@@ -144,7 +144,33 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Besitzerin; einzelne Vorkommen fremder Serien niemand (nur in Google).
   bool canEdit(CalendarEvent e) {
     if (e.isForeignInstance) return false;
+    final owner = e.googleOwner;
+    if (owner.isNotEmpty) return owner == settings.userName;
     return repo.calendar(e.calendarKey)?.editableBy(settings.userName) ?? true;
+  }
+
+  /// Wem gehört der Termin, wenn ich ihn nicht ändern darf? ('' = niemandem)
+  String lockedBy(CalendarEvent e) {
+    final owner = e.googleOwner;
+    if (owner.isNotEmpty) return owner;
+    return repo.calendar(e.calendarKey)?.syncOwner ?? '';
+  }
+
+  /// Kalender, denen ich einen übernommenen Google-Termin zuordnen kann.
+  List<CalendarDef> assignableCalendars(CalendarEvent e) => [
+        for (final c in writableCalendars)
+          if (c.kind == CalendarKind.standard || c.key == e.calendarKey) c,
+      ];
+
+  /// Ordnet einen Termin einem anderen Kalender zu (auch über Datenquellen
+  /// hinweg). Übernommene Google-Termine bleiben mit Google verbunden.
+  Future<void> moveToCalendar(CalendarEvent e, CalendarDef target) async {
+    if (e.calendarKey == target.key) return;
+    final previous = e.sourceId;
+    e
+      ..sourceId = target.sourceId
+      ..calendarId = target.id;
+    await saveEvent(e, previousSourceId: previous);
   }
 
   /// Kalender, in denen ich Termine anlegen darf.
@@ -154,6 +180,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   // ------------------------------------------------------------ Schreiben
 
   Future<void> saveEvent(CalendarEvent e, {String? previousSourceId}) async {
+    // Übernommene Google-Termine ändert nur ihre Besitzerin – also ich.
+    final g = e.google;
+    if (g != null && e.googleOwner.isEmpty && !e.isForeignInstance) {
+      e.extra['google'] = {...g, 'owner': settings.userName};
+    }
     await repo.saveEvent(e, previousSourceId: previousSourceId);
     _changed();
   }
