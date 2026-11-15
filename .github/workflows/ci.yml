@@ -27,3 +27,6 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze --no-fatal-infos
       - run: flutter test
+      # Baut auch den Android-Teil (Kotlin, Manifest, Plugins), damit Fehler dort
+      # nicht erst beim Release auffallen.
+      - run: flutter build apk --debug --target-platform android-arm64

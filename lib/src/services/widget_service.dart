@@ -50,6 +50,9 @@ class WidgetService {
         calendarKeys: {for (final c in repo.calendars) c.key},
         holidayState: settings.holidayState);
     final data = {
+      // Mit dem Datum ändern sich die Daten täglich – so zeichnet der
+      // Hintergrund-Worker die Widgets auch an Tagen ohne neue Termine neu.
+      'today': isoDate(today),
       'week_start': isoDate(weekStart),
       'theme': settings.themeColor,
       'default_keys': defaultKeys.toList(),

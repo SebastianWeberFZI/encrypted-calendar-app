@@ -29,6 +29,7 @@ class MonthWidgetProvider : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
         for (id in ids) update(context, manager, id)
         manager.notifyAppWidgetViewDataChanged(ids, R.id.month_list)
+        DayTicker.schedule(context) // nach Mitternacht neu zeichnen
     }
 
     override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, id: Int, newOptions: Bundle) {

@@ -36,6 +36,7 @@ class AgendaWidgetProvider : AppWidgetProvider() {
             manager.updateAppWidget(id, views)
         }
         manager.notifyAppWidgetViewDataChanged(ids, R.id.agenda_list)
+        DayTicker.schedule(context) // nach Mitternacht neu zeichnen
     }
 
     override fun onDeleted(context: Context, ids: IntArray) = WidgetPrefs.remove(context, ids)

@@ -28,12 +28,15 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final nav = CalendarNav();
   StreamSubscription<Uri?>? _widgetClicks;
+  late DateTime _today;
 
   AppState get state => widget.state;
 
   @override
   void initState() {
     super.initState();
+    _today = state.today.value;
+    state.today.addListener(_dayChanged);
     state.toast.addListener(_showToast);
     // Tipp auf ein Widget öffnet den passenden Tag.
     if (Platform.isAndroid) {
@@ -42,8 +45,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Neuer Tag: Stand die Ansicht auf „heute“, wandert sie mit.
+  void _dayChanged() {
+    final old = _today;
+    _today = state.today.value;
+    if (nav.selected == null || nav.selected == old) nav.jumpTo(_today);
+  }
+
   @override
   void dispose() {
+    state.today.removeListener(_dayChanged);
     state.toast.removeListener(_showToast);
     _widgetClicks?.cancel();
     nav.dispose();

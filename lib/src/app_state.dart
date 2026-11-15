@@ -59,7 +59,21 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Heutiges Datum. Bleibt die App über Mitternacht im Speicher (Android
+  /// hält sie oft tagelang), wandert es beim nächsten Minutentakt oder beim
+  /// Zurückkehren in die App mit – Ansicht und Widgets folgen.
+  final ValueNotifier<DateTime> today = ValueNotifier(dateOnly(DateTime.now()));
+
+  void _checkDay() {
+    final d = dateOnly(DateTime.now());
+    if (d == today.value) return;
+    today.value = d;
+    _scheduleSideEffects(); // Widgets und Erinnerungen auf den neuen Tag
+    notifyListeners();
+  }
+
   void _startTimers() {
+    _checkDay();
     _minuteTimer?.cancel();
     _minuteTimer = Timer.periodic(const Duration(minutes: 1), (_) => _tick());
     _autoSync?.cancel();
@@ -70,6 +84,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _tick() async {
     settings.foregroundBeat = DateTime.now();
+    _checkDay();
     await _sendMails();
   }
 
@@ -321,6 +336,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _minuteTimer?.cancel();
     _autoSync?.cancel();
+    today.dispose();
     super.dispose();
   }
 }
