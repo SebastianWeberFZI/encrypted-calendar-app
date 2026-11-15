@@ -275,7 +275,6 @@ class GoogleSync {
     final appEvents = List.of(data.events);
     final appById = {for (final e in appEvents) e.id: e};
     final importKey = importCal?.key ?? config.importCalendarKey;
-    final inPairRows = state.inn.keys.toSet();
 
     // Löschungen, weil etwas auf der anderen Seite verschwand (mit Schutz)
     final vanishedInGoogle = <(CalendarEvent, void Function())>[];
