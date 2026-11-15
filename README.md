@@ -25,7 +25,7 @@ Beim ersten Start fragt die App nach dem privaten Daten-Repo, einem Fine-grained
 - Mehrere **Datenquellen** (z. B. „Gemeinsam“ + „Privat“), je Repo + Passphrase
 - Beliebig viele **Kalender** je Datenquelle (Farbe, Symbol, Standard-Erinnerungen; Art „Termine“ oder „Geburtstage“)
 - Kalender einzeln oder gemeinsam einblenden (Kalenderleiste, „nur dieser“ per langem Tippen)
-- Monat (Komorebi-Raster mit Terminlabels und mehrtägigen Balken), Woche, Liste
+- Monat (Komorebi-Raster mit Terminlabels und mehrtägigen Balken; Wochen laufen durchgehend, frei nach oben/unten scrollbar), Woche, Liste
 - Wiederholungen (täglich/wöchentlich an Wochentagen/monatlich/jährlich, Intervall, Ende), einzelne Vorkommen löschen
 - Feiertage je Bundesland (lokal berechnet)
 - Erinnerungen als **Push** (exakte Alarme) und/oder **E-Mail** (SMTP direkt vom Handy)

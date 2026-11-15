@@ -16,6 +16,8 @@ import 'theme.dart';
 
 /// Monatsansicht nach Vorbild Komorebi: großes Raster mit farbigen
 /// Termin-Labels in den Zellen, darunter (einklappbar) die Tagesliste.
+/// Die Wochen laufen als durchgehende Liste: frei nach oben und unten scrollen,
+/// der Monat in der Mitte des Rasters ist hervorgehoben und steht im Titel.
 class MonthView extends StatefulWidget {
   const MonthView({super.key, required this.state, required this.nav});
   final AppState state;
@@ -26,52 +28,93 @@ class MonthView extends StatefulWidget {
 }
 
 class _MonthViewState extends State<MonthView> {
-  static const _base = 1200;
-  final DateTime _origin = DateTime(DateTime.now().year, DateTime.now().month);
-  late final PageController _pc =
-      PageController(initialPage: _pageFor(widget.nav.focused));
-  late int _jumpToken = widget.nav.jumpToken;
+  /// Wochen vor und nach heute (gut 100 Jahre).
+  static const _base = 5300;
 
-  int _pageFor(DateTime d) =>
-      _base + (d.year - _origin.year) * 12 + d.month - _origin.month;
-  DateTime _monthFor(int page) =>
-      DateTime(_origin.year, _origin.month + page - _base);
+  /// So viele Wochen passen bei eingeklappter Tagesliste ins Raster.
+  static const _rows = 6;
+
+  final DateTime _origin = _mondayOf(dateOnly(DateTime.now()));
+  late int _jumpToken = widget.nav.jumpToken;
+  ScrollController? _sc;
+  double _rowH = 0;
+  double _viewH = 0;
+
+  /// Oberkante des Rasters in Wochen (bleibt beim Drehen des Handys erhalten).
+  double _topWeek = 0;
+  DateTime? _shownSelected;
+  bool _shownPanel = false;
+  final Map<String, Map<DateTime, String>> _holidays = {};
+
+  static DateTime _mondayOf(DateTime d) => DateTime(d.year, d.month, d.day - (d.weekday - 1));
+
+  static int _daysBetween(DateTime a, DateTime b) =>
+      DateTime.utc(b.year, b.month, b.day).difference(DateTime.utc(a.year, a.month, a.day)).inDays;
+
+  DateTime _weekStart(int i) => DateTime(_origin.year, _origin.month, _origin.day + (i - _base) * 7);
+  int _indexOf(DateTime d) => _base + (_daysBetween(_origin, _mondayOf(d)) / 7).round();
+
+  /// Oberkante (in Wochen) für ein Datum: sein Monat beginnt oben, der Tag
+  /// selbst bleibt aber sichtbar, auch wenn die Tagesliste offen ist.
+  double _topFor(DateTime d, double viewH) {
+    var top = _indexOf(DateTime(d.year, d.month, 1)).toDouble();
+    final visible = viewH / _rowH;
+    final row = _indexOf(d);
+    if (row + 1 > top + visible) top = row + 1 - visible;
+    return top;
+  }
+
+  Map<DateTime, String> _holidaysFor(int year) {
+    final region = widget.state.settings.holidayState;
+    return _holidays.putIfAbsent('$region|$year', () => holidaysFor(year, region));
+  }
 
   @override
   void dispose() {
-    _pc.dispose();
+    _sc?.dispose();
     super.dispose();
   }
 
-  void _onPage(int p) {
-    final m = _monthFor(p);
+  void _onScroll() {
+    final sc = _sc!;
+    if (_rowH <= 0 || !sc.hasClients) return;
+    _topWeek = sc.offset / _rowH;
+    // Der Monat in der Mitte des sichtbaren Rasters gilt als aktueller Monat.
+    final mid = ((sc.offset + sc.position.viewportDimension / 2) / _rowH).floor();
+    final thu = _weekStart(mid).add(const Duration(days: 3));
     final nav = widget.nav;
-    if (nav.focused.year == m.year && nav.focused.month == m.month) return;
+    if (nav.focused.year == thu.year && nav.focused.month == thu.month) return;
     final today = dateOnly(DateTime.now());
-    final sel = (today.year == m.year && today.month == m.month) ? today : m;
-    nav.focused = sel;
-    nav.selected = sel;
-    nav.setFocused(sel);
+    nav.setFocused(today.year == thu.year && today.month == thu.month ? today : DateTime(thu.year, thu.month));
+  }
+
+  void _scrollTo(double top, {bool animate = true}) {
+    final sc = _sc;
+    if (sc == null || !sc.hasClients) return;
+    final target = top * _rowH;
+    if (!animate || (target - sc.offset).abs() > _rowH * 12) {
+      sc.jumpTo(target);
+    } else {
+      sc.animateTo(target, duration: const Duration(milliseconds: 300), curve: Curves.easeOutCubic);
+    }
+  }
+
+  /// Ausgewählten Tag sichtbar halten (z. B. wenn sich die Tagesliste öffnet).
+  void _ensureVisible(DateTime day, double viewH) {
+    final row = _indexOf(day).toDouble();
+    final visible = viewH / _rowH;
+    if (row < _topWeek) {
+      _scrollTo(row);
+    } else if (row + 1 > _topWeek + visible) {
+      _scrollTo(row + 1 - visible);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final nav = widget.nav;
-    if (nav.jumpToken != _jumpToken) {
-      _jumpToken = nav.jumpToken;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_pc.hasClients) {
-          final target = _pageFor(nav.focused);
-          if ((target - (_pc.page ?? target).round()).abs() > 2) {
-            _pc.jumpToPage(target);
-          } else {
-            _pc.animateToPage(target,
-                duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
-          }
-        }
-      });
-    }
     final showPanel = nav.panelOpen && nav.selected != null;
+    final focusedMonth = DateTime(nav.focused.year, nav.focused.month);
     // Die Zeitraum-Anzeige schwebt über dem Raster: Während des Ziehens darf
     // sich das Layout nicht verschieben, sonst passen die Koordinaten nicht mehr.
     return Stack(children: [
@@ -79,17 +122,89 @@ class _MonthViewState extends State<MonthView> {
         const _WeekdayHeader(),
         Expanded(
           child: LayoutBuilder(builder: (context, c) {
+            final rowH = c.maxHeight / _rows;
             final gridH = showPanel ? c.maxHeight * 0.56 : c.maxHeight;
+            if (_sc == null) {
+              _rowH = rowH;
+              _topWeek = _topFor(nav.focused, gridH);
+              _sc = ScrollController(initialScrollOffset: _topWeek * rowH)..addListener(_onScroll);
+              _shownSelected = nav.selected;
+              _shownPanel = showPanel;
+            } else if (rowH != _rowH) {
+              // Andere Höhe (Drehen, Kalenderleiste): dieselbe Woche bleibt oben.
+              _rowH = rowH;
+              final top = _topWeek;
+              WidgetsBinding.instance.addPostFrameCallback((_) => _scrollTo(top, animate: false));
+            }
+            _viewH = gridH;
+            if (nav.jumpToken != _jumpToken) {
+              _jumpToken = nav.jumpToken;
+              final target = nav.focused;
+              WidgetsBinding.instance.addPostFrameCallback((_) => _scrollTo(_topFor(target, _viewH)));
+            } else if (showPanel && (nav.selected != _shownSelected || !_shownPanel)) {
+              final day = nav.selected!;
+              // erst nach dem Aufklappen der Tagesliste nachsehen
+              Future.delayed(const Duration(milliseconds: 240), () {
+                if (mounted) _ensureVisible(day, _viewH);
+              });
+            }
+            _shownSelected = nav.selected;
+            _shownPanel = showPanel;
+            final cellW = c.maxWidth / 7;
+            final maxSlots = max(0, ((rowH - _numberH - 2) / _slotH).floor());
+            final showHolidays = widget.state.settings.showHolidays;
+
+            DateTime dayAt(Offset p) {
+              final row = ((_sc!.offset + p.dy) / rowH).floor();
+              final col = (p.dx / cellW).floor().clamp(0, 6);
+              final ws = _weekStart(row);
+              return DateTime(ws.year, ws.month, ws.day + col);
+            }
+
             return Column(children: [
               AnimatedContainer(
                 duration: const Duration(milliseconds: 220),
                 curve: Curves.easeOutCubic,
                 height: gridH,
-                child: PageView.builder(
-                  controller: _pc,
-                  onPageChanged: _onPage,
-                  itemBuilder: (context, p) =>
-                      MonthGrid(month: _monthFor(p), state: widget.state, nav: nav),
+                // Gedrückt halten = Beginn, ziehen = Ende, loslassen = ein Termin
+                // über den ganzen Zeitraum (mehrtägig statt vieler Einzeltermine).
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onLongPressStart: (d) {
+                    HapticFeedback.mediumImpact();
+                    nav.startRange(dayAt(d.localPosition));
+                  },
+                  onLongPressMoveUpdate: (d) {
+                    if (nav.updateRange(dayAt(d.localPosition))) HapticFeedback.selectionClick();
+                  },
+                  onLongPressEnd: (_) async {
+                    final r = nav.finishRange();
+                    if (r != null) await openEventEditor(context, widget.state, initialRange: r);
+                  },
+                  onLongPressCancel: () {
+                    if (nav.rangeActive) nav.finishRange();
+                  },
+                  child: ListView.builder(
+                    controller: _sc,
+                    itemExtent: rowH,
+                    itemCount: 2 * _base,
+                    itemBuilder: (context, i) {
+                      final ws = _weekStart(i);
+                      final we = ws.add(const Duration(days: 7));
+                      return _WeekRow(
+                        weekStart: ws,
+                        month: focusedMonth,
+                        occ: widget.state.occurrences(ws, we),
+                        holidays: showHolidays
+                            ? {..._holidaysFor(ws.year), if (we.year != ws.year) ..._holidaysFor(we.year)}
+                            : const {},
+                        cellW: cellW,
+                        maxSlots: maxSlots,
+                        state: widget.state,
+                        nav: nav,
+                      );
+                    },
+                  ),
                 ),
               ),
               if (showPanel)
@@ -103,6 +218,9 @@ class _MonthViewState extends State<MonthView> {
     ]);
   }
 }
+
+const _numberH = 22.0;
+const _slotH = 16.0;
 
 class _WeekdayHeader extends StatelessWidget {
   const _WeekdayHeader();
@@ -124,77 +242,6 @@ class _WeekdayHeader extends StatelessWidget {
           ),
       ]),
     );
-  }
-}
-
-class MonthGrid extends StatelessWidget {
-  const MonthGrid({super.key, required this.month, required this.state, required this.nav});
-  final DateTime month;
-  final AppState state;
-  final CalendarNav nav;
-
-  static const numberH = 22.0;
-  static const slotH = 16.0;
-
-  @override
-  Widget build(BuildContext context) {
-    final first = DateTime(month.year, month.month, 1);
-    final gridStart = first.subtract(Duration(days: first.weekday - 1));
-    final daysInMonth = DateTime(month.year, month.month + 1, 0).day;
-    final weeks = ((first.weekday - 1 + daysInMonth) / 7).ceil();
-    final occ = state.occurrences(gridStart, gridStart.add(Duration(days: weeks * 7)));
-    final holidays = state.settings.showHolidays
-        ? {
-            for (final y in {gridStart.year, gridStart.add(Duration(days: weeks * 7)).year})
-              ...holidaysFor(y, state.settings.holidayState)
-          }
-        : <DateTime, String>{};
-    return LayoutBuilder(builder: (context, c) {
-      final rowH = c.maxHeight / weeks;
-      final cellW = c.maxWidth / 7;
-      final maxSlots = max(0, ((rowH - numberH - 2) / slotH).floor());
-      DateTime dayAt(Offset p) {
-        final row = (p.dy / rowH).floor().clamp(0, weeks - 1);
-        final col = (p.dx / cellW).floor().clamp(0, 6);
-        return DateTime(gridStart.year, gridStart.month, gridStart.day + row * 7 + col);
-      }
-
-      // Gedrückt halten = Beginn, ziehen = Ende, loslassen = ein Termin über
-      // den ganzen Zeitraum (mehrtägig statt vieler Einzeltermine).
-      return GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onLongPressStart: (d) {
-          HapticFeedback.mediumImpact();
-          nav.startRange(dayAt(d.localPosition));
-        },
-        onLongPressMoveUpdate: (d) {
-          if (nav.updateRange(dayAt(d.localPosition))) HapticFeedback.selectionClick();
-        },
-        onLongPressEnd: (_) async {
-          final r = nav.finishRange();
-          if (r != null) await openEventEditor(context, state, initialRange: r);
-        },
-        onLongPressCancel: () {
-          if (nav.rangeActive) nav.finishRange();
-        },
-        child: Column(children: [
-          for (var w = 0; w < weeks; w++)
-            SizedBox(
-              height: rowH,
-              child: _WeekRow(
-                weekStart: DateTime(gridStart.year, gridStart.month, gridStart.day + w * 7),
-                month: month,
-                occ: occ,
-                holidays: holidays,
-                cellW: cellW,
-                maxSlots: maxSlots,
-                state: state,
-                nav: nav,
-              ),
-            ),
-        ]),
-      );
-    });
   }
 }
 
@@ -224,14 +271,15 @@ class _WeekRow extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final layout = layoutWeek(weekStart, occ, maxSlots);
     final today = dateOnly(DateTime.now());
-    const nH = MonthGrid.numberH, sH = MonthGrid.slotH;
+    const nH = _numberH, sH = _slotH;
 
     return Stack(children: [
       Row(children: [
         for (var i = 0; i < 7; i++)
           _DayCell(
             day: DateTime(weekStart.year, weekStart.month, weekStart.day + i),
-            inMonth: DateTime(weekStart.year, weekStart.month, weekStart.day + i).month == month.month,
+            inMonth: DateTime(weekStart.year, weekStart.month, weekStart.day + i).month == month.month &&
+                DateTime(weekStart.year, weekStart.month, weekStart.day + i).year == month.year,
             isToday: DateTime(weekStart.year, weekStart.month, weekStart.day + i) == today,
             holiday: holidays.containsKey(DateTime(weekStart.year, weekStart.month, weekStart.day + i)),
             col: i,
@@ -321,7 +369,8 @@ class _DayCell extends StatelessWidget {
           alignment: Alignment.topCenter,
           padding: const EdgeInsets.only(top: 2),
           child: Container(
-            width: 20,
+            constraints: const BoxConstraints(minWidth: 20),
+            padding: const EdgeInsets.symmetric(horizontal: 3),
             height: 18,
             alignment: Alignment.center,
             decoration: isToday
@@ -331,11 +380,15 @@ class _DayCell extends StatelessWidget {
                         border: Border.all(color: scheme.primary, width: 1.2),
                         borderRadius: BorderRadius.circular(9))
                     : null,
-            child: Text('${day.day}',
+            // Am 1. steht der Monat dabei – beim Scrollen die Orientierung.
+            child: Text(day.day == 1 ? '1. ${kMonthsShort[day.month - 1]}' : '${day.day}',
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.clip,
                 style: TextStyle(
                     fontSize: 12,
                     height: 1.0,
-                    fontWeight: isToday || selected ? FontWeight.w700 : FontWeight.w500,
+                    fontWeight: isToday || selected || day.day == 1 ? FontWeight.w700 : FontWeight.w500,
                     color: isToday ? scheme.onPrimary : numColor)),
           ),
         ),

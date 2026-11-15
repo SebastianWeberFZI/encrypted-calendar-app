@@ -4,6 +4,7 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -18,6 +19,8 @@ import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Monats-Widget: scrollbare Liste von Wochenzeilen ab der aktuellen Woche (ein halbes
@@ -71,6 +74,10 @@ private class MonthFactory(private val context: Context, private val widgetId: I
     companion object {
         const val WEEKS = 26
         const val ROW_DP = 58f
+
+        /** Je Wochenbild höchstens so viele Pixel (4 Byte je Pixel): größere Bilder
+         *  scheitern bei der Übergabe an den Startbildschirm (Grenze ca. 1 MB). */
+        const val MAX_PIXELS = 225_000f
         val dayIds = intArrayOf(R.id.d0, R.id.d1, R.id.d2, R.id.d3, R.id.d4, R.id.d5, R.id.d6)
     }
 
@@ -86,10 +93,15 @@ private class MonthFactory(private val context: Context, private val widgetId: I
         snap = WidgetData.load(context).forWidget(context, widgetId)
         val today = LocalDate.now()
         firstWeek = today.minusDays((today.dayOfWeek.value - 1).toLong())
+        // Bild in voller Auflösung des Displays und in der tatsächlichen Breite
+        // zeichnen – sonst wird es hochskaliert und wirkt unscharf. Hochkant gilt
+        // die kleinste gemeldete Breite, quer die größte.
         val opts = AppWidgetManager.getInstance(context).getAppWidgetOptions(widgetId)
-        val wDp = max(opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 300), 160)
-        scale = min(context.resources.displayMetrics.density, 2.5f)
-        widthPx = max(((wDp - 12) * scale).toInt(), 100)
+        val landscape = context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val key = if (landscape) AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH else AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH
+        val wDp = max(opts.getInt(key, 300), 160)
+        scale = min(context.resources.displayMetrics.density, sqrt(MAX_PIXELS / ((wDp - 12) * ROW_DP)))
+        widthPx = max(((wDp - 12) * scale).roundToInt(), 100)
     }
 
     override fun getCount() = WEEKS
@@ -102,7 +114,7 @@ private class MonthFactory(private val context: Context, private val widgetId: I
         val ws = firstWeek.plusDays(position * 7L)
         return RemoteViews(context.packageName, R.layout.widget_month_week).apply {
             setImageViewBitmap(R.id.week_img,
-                WeekPainter.draw(snap, ws, LocalDate.now(), widthPx, (ROW_DP * scale).toInt(), scale))
+                WeekPainter.draw(snap, ws, LocalDate.now(), widthPx, (ROW_DP * scale).roundToInt(), scale))
             for (i in 0 until 7) {
                 val d = ws.plusDays(i.toLong())
                 setOnClickFillInIntent(dayIds[i], Intent().setData(Uri.parse("kalender://new?date=$d")))
@@ -184,32 +196,50 @@ object WeekPainter {
         text.textAlign = Paint.Align.LEFT
         text.textSize = 9.5f * s
         for (it in items) {
-            var show = it.slot < maxSlots
-            if (show && it.slot == maxSlots - 1 && (it.c0..it.c1).any { c -> overflow[c] }) show = false
-            if (!show) {
+            if (it.slot >= maxSlots) {
                 for (c in it.c0..it.c1) hidden[c]++
                 continue
             }
-            val e = it.ev
-            // Balken, die in der Vor-/Folgewoche weitergehen, laufen bis an den Rand
-            val contLeft = e.start.isBefore(ws)
-            val contRight = e.end.isAfter(we)
-            val l = if (contLeft) 0f else it.c0 * cellW + 1.5f * s
-            val r = if (contRight) w.toFloat() else (it.c1 + 1) * cellW - 1.5f * s
-            val t = numH + it.slot * slotH
-            val rect = RectF(l, t, r, t + slotH - 1.5f * s)
-            when {
-                e.holiday -> { p.color = (sunday and 0x00FFFFFF) or 0x18000000; text.color = sunday }
-                e.allDay || e.multiDay -> { p.color = e.color; text.color = Color.WHITE }
-                else -> { p.color = (e.color and 0x00FFFFFF) or 0x2A000000; text.color = darken(e.color) }
+            // Im letzten Slot nur an Tagen mit Überlauf ausblenden (dort steht "+N"),
+            // an den anderen Tagen bleibt der Balken sichtbar.
+            val segs = ArrayList<IntArray>()
+            if (it.slot < maxSlots - 1) {
+                segs.add(intArrayOf(it.c0, it.c1))
+            } else {
+                var c = it.c0
+                while (c <= it.c1) {
+                    if (overflow[c]) { hidden[c]++; c++; continue }
+                    val from = c
+                    while (c < it.c1 && !overflow[c + 1]) c++
+                    segs.add(intArrayOf(from, c))
+                    c++
+                }
             }
-            cv.drawRoundRect(rect, 3f * s, 3f * s, p)
-            if (contLeft) cv.drawRect(RectF(l, rect.top, l + 4f * s, rect.bottom), p)
-            if (contRight) cv.drawRect(RectF(r - 4f * s, rect.top, r, rect.bottom), p)
-            cv.save()
-            cv.clipRect(rect)
-            cv.drawText(e.title, max(l, 0f) + 2.5f * s, t + slotH - 4.5f * s, text)
-            cv.restore()
+            val e = it.ev
+            for (seg in segs) {
+                // Balken, die in der Vor-/Folgewoche weitergehen, laufen bis an den Rand;
+                // unterbrochene Balken enden eckig an der Zellgrenze.
+                val contLeft = seg[0] == it.c0 && e.start.isBefore(ws)
+                val contRight = seg[1] == it.c1 && e.end.isAfter(we)
+                val cutLeft = seg[0] > it.c0
+                val cutRight = seg[1] < it.c1
+                val l = if (contLeft) 0f else seg[0] * cellW + 1.5f * s
+                val r = if (contRight) w.toFloat() else (seg[1] + 1) * cellW - 1.5f * s
+                val t = numH + it.slot * slotH
+                val rect = RectF(l, t, r, t + slotH - 1.5f * s)
+                when {
+                    e.holiday -> { p.color = (sunday and 0x00FFFFFF) or 0x18000000; text.color = sunday }
+                    e.allDay || e.multiDay -> { p.color = e.color; text.color = Color.WHITE }
+                    else -> { p.color = (e.color and 0x00FFFFFF) or 0x2A000000; text.color = darken(e.color) }
+                }
+                cv.drawRoundRect(rect, 3f * s, 3f * s, p)
+                if (contLeft || cutLeft) cv.drawRect(RectF(l, rect.top, l + 4f * s, rect.bottom), p)
+                if (contRight || cutRight) cv.drawRect(RectF(r - 4f * s, rect.top, r, rect.bottom), p)
+                cv.save()
+                cv.clipRect(rect)
+                cv.drawText(e.title, max(l, 0f) + 2.5f * s, t + slotH - 4.5f * s, text)
+                cv.restore()
+            }
         }
         text.color = muted
         text.textAlign = Paint.Align.CENTER

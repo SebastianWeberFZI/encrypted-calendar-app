@@ -87,6 +87,24 @@ void main() {
       expect(l.visible.where((it) => it.startCol <= 1 && it.endCol >= 1).length, 2);
     });
 
+    test('Überlauf an einem Tag blendet einen mehrtägigen Balken nur dort aus', () {
+      final ws = DateTime(2026, 12, 21); // Montag
+      Occurrence day(int d) =>
+          Occurrence(ev(DateTime(2026, 12, d), DateTime(2026, 12, d), allDay: true), null, DateTime(2026, 12, d),
+              DateTime(2026, 12, d));
+      final h1 = Occurrence(null, null, DateTime(2026, 12, 25), DateTime(2026, 12, 25), holiday: true);
+      final h2 = Occurrence(null, null, DateTime(2026, 12, 26), DateTime(2026, 12, 26), holiday: true);
+      final trip = Occurrence(ev(DateTime(2026, 12, 16), DateTime(2027, 1, 2), allDay: true), null,
+          DateTime(2026, 12, 16), DateTime(2027, 1, 2));
+      final x = day(25);
+      final l = layoutWeek(ws, [h1, h2, trip, x], 2);
+      expect(l.hiddenPerCol, [0, 0, 0, 0, 2, 0, 0], reason: 'nur am 25. „+2“');
+      final parts = [for (final it in l.visible) if (it.occ == trip) (it.startCol, it.endCol)];
+      expect(parts, [(0, 3), (5, 6)]);
+      final first = l.visible.firstWhere((it) => it.occ == trip);
+      expect((first.continuesLeft, first.continuesRight), (true, true));
+    });
+
     test('Balken aus der Vorwoche ist links offen', () {
       final ws = DateTime(2026, 11, 9);
       final occ = Occurrence(ev(DateTime(2026, 11, 7), DateTime(2026, 11, 10), allDay: true), null,

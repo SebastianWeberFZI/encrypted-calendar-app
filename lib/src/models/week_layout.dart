@@ -71,23 +71,40 @@ WeekLayout layoutWeek(
       ..continuesRight = o.endDay.isAfter(we));
   }
 
-  // Spalten mit Überlauf
+  // Spalten mit Überlauf: dort gehört der letzte Slot dem "+N".
   final overflow = List.generate(7, (c) => used[c].any((s) => s >= maxSlots));
   final visible = <WeekItem>[];
   final hidden = List.filled(7, 0);
   for (final it in all) {
-    var show = it.slot < maxSlots;
-    if (show && it.slot == maxSlots - 1) {
-      for (var c = it.startCol; c <= it.endCol; c++) {
-        if (overflow[c]) show = false;
-      }
-    }
-    if (show) {
-      visible.add(it);
-    } else {
+    if (it.slot >= maxSlots) {
       for (var c = it.startCol; c <= it.endCol; c++) {
         hidden[c]++;
       }
+      continue;
+    }
+    if (it.slot < maxSlots - 1) {
+      visible.add(it);
+      continue;
+    }
+    // Letzter Slot: nur an Tagen mit Überlauf ausblenden, sonst bleibt der
+    // Balken sichtbar (ein mehrtägiger Termin wird dabei unterbrochen).
+    var c = it.startCol;
+    while (c <= it.endCol) {
+      if (overflow[c]) {
+        hidden[c]++;
+        c++;
+        continue;
+      }
+      final from = c;
+      while (c < it.endCol && !overflow[c + 1]) {
+        c++;
+      }
+      visible.add(from == it.startCol && c == it.endCol
+          ? it
+          : (WeekItem(it.occ, from, c, it.slot)
+            ..continuesLeft = from > it.startCol || it.continuesLeft
+            ..continuesRight = c < it.endCol || it.continuesRight));
+      c++;
     }
   }
   return WeekLayout(visible, hidden);
