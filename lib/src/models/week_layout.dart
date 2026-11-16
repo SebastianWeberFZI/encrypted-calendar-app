@@ -34,14 +34,16 @@ WeekLayout layoutWeek(
       .where((o) => !o.endDay.isBefore(ws) && !o.startDay.isAfter(we))
       .toList()
     ..sort((a, b) {
-      // Feiertage zuerst, dann längere Balken, dann chronologisch
-      int rank(Occurrence o) => o.holiday ? 0 : o.isMultiDay ? 1 : o.allDay ? 2 : 3;
+      // Länger laufende oben (mehrtägige nach Dauer), dann Feiertage,
+      // ganztägige und zuletzt die mit Uhrzeit, jeweils chronologisch
+      int rank(Occurrence o) => o.isMultiDay ? 0 : o.holiday ? 1 : o.allDay ? 2 : 3;
       final r = rank(a).compareTo(rank(b));
       if (r != 0) return r;
       if (a.isMultiDay && b.isMultiDay) {
+        final d = _days(b).compareTo(_days(a));
+        if (d != 0) return d;
         final s = a.startDay.compareTo(b.startDay);
         if (s != 0) return s;
-        return b.endDay.compareTo(a.endDay);
       }
       return compareOccurrences(a, b);
     });
@@ -109,3 +111,8 @@ WeekLayout layoutWeek(
   }
   return WeekLayout(visible, hidden);
 }
+
+/// Dauer in Kalendertagen (unabhängig von der Zeitumstellung).
+int _days(Occurrence o) => DateTime.utc(o.endDay.year, o.endDay.month, o.endDay.day)
+    .difference(DateTime.utc(o.startDay.year, o.startDay.month, o.startDay.day))
+    .inDays;

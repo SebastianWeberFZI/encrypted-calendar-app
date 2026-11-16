@@ -3,7 +3,7 @@ description: "Gemeinsamer Kalender mit privaten GitHub-Repos als verschlüsselte
 publish_to: 'none'
 
 # Version wird im Release-Build aus dem Git-Tag überschrieben.
-version: 0.1.6+7
+version: 0.1.7+8
 
 environment:
   sdk: ^3.12.0

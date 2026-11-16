@@ -144,7 +144,8 @@ object WeekPainter {
         val cellW = w / 7f
         val numH = 17f * s
         val slotH = 13f * s
-        val maxSlots = max(1, ((h - numH - 2 * s) / slotH).toInt())
+        // kleine Toleranz: h ist auf ganze Pixel gerundet (sonst bei 2,625-facher Dichte nur 2 statt 3 Zeilen)
+        val maxSlots = max(1, ((h - numH - 2 * s) / slotH + 0.05f).toInt())
 
         p.color = line
         p.strokeWidth = max(1f, s * 0.5f)
@@ -175,11 +176,12 @@ object WeekPainter {
             cv.drawText(label, cx, 12.5f * s, text)
         }
 
-        // Einträge auf Zeilen verteilen: Feiertage, dann mehrtägige (längste zuerst), dann der Rest
+        // Einträge auf Zeilen verteilen: länger laufende oben (mehrtägige nach Dauer),
+        // dann Feiertage, ganztägige und zuletzt die mit Uhrzeit
         val evs = snap.events.filter { !it.end.isBefore(ws) && !it.start.isAfter(we) }
             .sortedWith(compareBy<WidgetEvent>(
-                { if (it.holiday) 0 else if (it.multiDay) 1 else if (it.allDay) 2 else 3 },
-                { it.start }, { -ChronoUnit.DAYS.between(it.start, it.end) }, { it.time }))
+                { if (it.multiDay) 0 else if (it.holiday) 1 else if (it.allDay) 2 else 3 },
+                { -ChronoUnit.DAYS.between(it.start, it.end) }, { it.start }, { it.time }))
         val used = Array(7) { HashSet<Int>() }
         val items = ArrayList<Item>()
         for (e in evs) {
@@ -190,64 +192,73 @@ object WeekPainter {
             for (c in c0..c1) used[c].add(slot)
             items.add(Item(e, c0, c1, slot))
         }
-        val overflow = BooleanArray(7) { c -> used[c].any { it >= maxSlots } }
+
+        // Alle Zeilen zeigen Termine; was nicht passt, zählt die kleine Zahl
+        // neben dem Datum. Ein Balken, der nur an einzelnen Tagen keinen Platz
+        // hat, erscheint an den übrigen Tagen in einer freien Zeile.
+        class Seg(val item: Item, val c0: Int, val c1: Int, val slot: Int)
+        val segs = ArrayList<Seg>()
+        val taken = Array(7) { HashSet<Int>() }
         val hidden = IntArray(7)
+        for (item in items) if (item.slot < maxSlots) {
+            for (c in item.c0..item.c1) taken[c].add(item.slot)
+            segs.add(Seg(item, item.c0, item.c1, item.slot))
+        }
+        fun freeIn(c: Int) = (0 until maxSlots).filter { slot -> slot !in taken[c] }.toSet()
+        for (item in items) if (item.slot >= maxSlots) {
+            var c = item.c0
+            while (c <= item.c1) {
+                var free = freeIn(c)
+                if (free.isEmpty()) { hidden[c]++; c++; continue }
+                val from = c
+                while (c < item.c1) {
+                    val next = free intersect freeIn(c + 1)
+                    if (next.isEmpty()) break
+                    free = next
+                    c++
+                }
+                val slot = free.min()
+                for (k in from..c) taken[k].add(slot)
+                segs.add(Seg(item, from, c, slot))
+                c++
+            }
+        }
+
         text.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
         text.textAlign = Paint.Align.LEFT
         text.textSize = 9.5f * s
-        for (it in items) {
-            if (it.slot >= maxSlots) {
-                for (c in it.c0..it.c1) hidden[c]++
-                continue
+        for (seg in segs) {
+            val e = seg.item.ev
+            // Balken, die in der Vor-/Folgewoche weitergehen, laufen bis an den Rand;
+            // unterbrochene Balken enden eckig an der Zellgrenze.
+            val contLeft = seg.c0 == seg.item.c0 && e.start.isBefore(ws)
+            val contRight = seg.c1 == seg.item.c1 && e.end.isAfter(we)
+            val cutLeft = seg.c0 > seg.item.c0
+            val cutRight = seg.c1 < seg.item.c1
+            val l = if (contLeft) 0f else seg.c0 * cellW + 1.5f * s
+            val r = if (contRight) w.toFloat() else (seg.c1 + 1) * cellW - 1.5f * s
+            val t = numH + seg.slot * slotH
+            val rect = RectF(l, t, r, t + slotH - 1.5f * s)
+            when {
+                e.holiday -> { p.color = (sunday and 0x00FFFFFF) or 0x18000000; text.color = sunday }
+                e.allDay || e.multiDay -> { p.color = e.color; text.color = Color.WHITE }
+                else -> { p.color = (e.color and 0x00FFFFFF) or 0x2A000000; text.color = darken(e.color) }
             }
-            // Im letzten Slot nur an Tagen mit Überlauf ausblenden (dort steht "+N"),
-            // an den anderen Tagen bleibt der Balken sichtbar.
-            val segs = ArrayList<IntArray>()
-            if (it.slot < maxSlots - 1) {
-                segs.add(intArrayOf(it.c0, it.c1))
-            } else {
-                var c = it.c0
-                while (c <= it.c1) {
-                    if (overflow[c]) { hidden[c]++; c++; continue }
-                    val from = c
-                    while (c < it.c1 && !overflow[c + 1]) c++
-                    segs.add(intArrayOf(from, c))
-                    c++
-                }
-            }
-            val e = it.ev
-            for (seg in segs) {
-                // Balken, die in der Vor-/Folgewoche weitergehen, laufen bis an den Rand;
-                // unterbrochene Balken enden eckig an der Zellgrenze.
-                val contLeft = seg[0] == it.c0 && e.start.isBefore(ws)
-                val contRight = seg[1] == it.c1 && e.end.isAfter(we)
-                val cutLeft = seg[0] > it.c0
-                val cutRight = seg[1] < it.c1
-                val l = if (contLeft) 0f else seg[0] * cellW + 1.5f * s
-                val r = if (contRight) w.toFloat() else (seg[1] + 1) * cellW - 1.5f * s
-                val t = numH + it.slot * slotH
-                val rect = RectF(l, t, r, t + slotH - 1.5f * s)
-                when {
-                    e.holiday -> { p.color = (sunday and 0x00FFFFFF) or 0x18000000; text.color = sunday }
-                    e.allDay || e.multiDay -> { p.color = e.color; text.color = Color.WHITE }
-                    else -> { p.color = (e.color and 0x00FFFFFF) or 0x2A000000; text.color = darken(e.color) }
-                }
-                cv.drawRoundRect(rect, 3f * s, 3f * s, p)
-                if (contLeft || cutLeft) cv.drawRect(RectF(l, rect.top, l + 4f * s, rect.bottom), p)
-                if (contRight || cutRight) cv.drawRect(RectF(r - 4f * s, rect.top, r, rect.bottom), p)
-                cv.save()
-                cv.clipRect(rect)
-                cv.drawText(e.title, max(l, 0f) + 2.5f * s, t + slotH - 4.5f * s, text)
-                cv.restore()
-            }
+            cv.drawRoundRect(rect, 3f * s, 3f * s, p)
+            if (contLeft || cutLeft) cv.drawRect(RectF(l, rect.top, l + 4f * s, rect.bottom), p)
+            if (contRight || cutRight) cv.drawRect(RectF(r - 4f * s, rect.top, r, rect.bottom), p)
+            cv.save()
+            cv.clipRect(rect)
+            cv.drawText(e.title, max(l, 0f) + 2.5f * s, t + slotH - 4.5f * s, text)
+            cv.restore()
         }
+        // "+N" klein rechts neben dem Datum statt in einer eigenen Zeile
         text.color = muted
-        text.textAlign = Paint.Align.CENTER
+        text.textAlign = Paint.Align.RIGHT
+        text.textSize = 8.5f * s
         text.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         for (c in 0 until 7) {
-            if (hidden[c] > 0) {
-                cv.drawText("+${hidden[c]}", c * cellW + cellW / 2, numH + (maxSlots - 1) * slotH + slotH - 4.5f * s, text)
-            }
+            if (hidden[c] > 0) cv.drawText("+${hidden[c]}", (c + 1) * cellW - 2.5f * s, 12f * s, text)
         }
         return bmp
     }

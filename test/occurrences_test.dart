@@ -97,12 +97,30 @@ void main() {
       final trip = Occurrence(ev(DateTime(2026, 12, 16), DateTime(2027, 1, 2), allDay: true), null,
           DateTime(2026, 12, 16), DateTime(2027, 1, 2));
       final x = day(25);
+      // Der lange Balken liegt oben und läuft durch; der Überlauf betrifft nur den 25.
       final l = layoutWeek(ws, [h1, h2, trip, x], 2);
       expect(l.hiddenPerCol, [0, 0, 0, 0, 2, 0, 0], reason: 'nur am 25. „+2“');
-      final parts = [for (final it in l.visible) if (it.occ == trip) (it.startCol, it.endCol)];
-      expect(parts, [(0, 3), (5, 6)]);
-      final first = l.visible.firstWhere((it) => it.occ == trip);
-      expect((first.continuesLeft, first.continuesRight), (true, true));
+      final t = l.visible.singleWhere((it) => it.occ == trip);
+      expect((t.slot, t.startCol, t.endCol, t.continuesLeft, t.continuesRight), (0, 0, 6, true, true));
+      // Liegt ein Balken in der letzten Zeile, wird er nur am Überlauf-Tag unterbrochen
+      final short = Occurrence(ev(DateTime(2026, 12, 22), DateTime(2026, 12, 27), allDay: true), null,
+          DateTime(2026, 12, 22), DateTime(2026, 12, 27));
+      final l2 = layoutWeek(ws, [trip, short, day(25), day(25)], 2);
+      expect(l2.hiddenPerCol, [0, 0, 0, 0, 3, 0, 0]);
+      expect([for (final it in l2.visible) if (it.occ == short) (it.startCol, it.endCol)], [(1, 3), (5, 6)]);
+    });
+
+    test('Länger laufende Termine liegen oben', () {
+      final ws = DateTime(2026, 11, 16);
+      Occurrence span(int s, int e) => Occurrence(ev(DateTime(2026, 11, s), DateTime(2026, 11, e), allDay: true),
+          null, DateTime(2026, 11, s), DateTime(2026, 11, e));
+      final shortEarly = span(16, 18), longLater = span(17, 28);
+      final holiday = Occurrence(null, null, DateTime(2026, 11, 18), DateTime(2026, 11, 18), holiday: true);
+      final l = layoutWeek(ws, [shortEarly, holiday, longLater], 4);
+      final slotOf = {for (final it in l.visible) it.occ: it.slot};
+      expect(slotOf[longLater], 0);
+      expect(slotOf[shortEarly], 1);
+      expect(slotOf[holiday], 2);
     });
 
     test('Balken aus der Vorwoche ist links offen', () {
