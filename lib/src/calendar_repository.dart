@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:cryptography/cryptography.dart';
 import 'package:uuid/uuid.dart';
@@ -297,6 +298,10 @@ class CalendarRepository {
       s.error = e.isUnauthorized
           ? 'Token ungültig oder abgelaufen.'
           : 'Sync fehlgeschlagen: ${e.message}';
+    } on FileSystemException catch (e) {
+      // Kein Netzproblem, sondern ein Dateifehler auf dem Gerät.
+      s.error = 'Speicherfehler auf dem Gerät (${e.runtimeType}) – wird beim nächsten '
+          'Abgleich erneut versucht, Einzelheiten im Protokoll.';
     } catch (e) {
       // Netzwerkfehler o. Ä. – die Einzelheiten stehen schon im Protokoll.
       s.error = 'Keine Verbindung (${e.runtimeType}) – Änderungen bleiben lokal '

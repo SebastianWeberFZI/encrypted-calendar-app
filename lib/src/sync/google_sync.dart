@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../core/file_mutex.dart';
 import '../models/calendar_models.dart';
 import 'device_calendar.dart';
 import 'event_mapping.dart';
@@ -117,12 +118,14 @@ class GoogleSyncState {
 
   /// Merkt sich, dass die Besitzerin einen übernommenen Termin gelöscht hat
   /// (der Abgleich löscht ihn dann auch im Handy-Kalender).
-  static Future<void> addTombstone(File f, String appEventId) async {
-    final s = await load(f);
-    if (!s.inn.values.any((p) => p.app == appEventId)) return;
-    s.tombstones.add(appEventId);
-    await s.save(f);
-  }
+  static Future<void> addTombstone(File f, String appEventId) => mutex(f).run(() async {
+        final s = await load(f);
+        if (!s.inn.values.any((p) => p.app == appEventId)) return;
+        s.tombstones.add(appEventId);
+        await s.save(f);
+      });
+
+  static FileMutex mutex(File stateFile) => FileMutex('${stateFile.path}.mutex');
 }
 
 class GoogleSyncResult {
@@ -204,17 +207,9 @@ class GoogleSync {
   static const instancePastDays = 30;
   static const instanceFutureDays = 400;
 
-  Future<GoogleSyncResult> run() async {
-    await stateFile.parent.create(recursive: true);
-    final lock = await File('${stateFile.path}.lock').open(mode: FileMode.write);
-    await lock.lock(FileLock.blockingExclusive);
-    try {
-      return await _run();
-    } finally {
-      await lock.unlock();
-      await lock.close();
-    }
-  }
+  /// Nie zwei Abgleiche gleichzeitig (App und Hintergrund, auch als Isolate
+  /// im selben Prozess) – sonst entstünden doppelte Kopien.
+  Future<GoogleSyncResult> run() => GoogleSyncState.mutex(stateFile).run(_run);
 
   Future<GoogleSyncResult> _run() async {
     final res = GoogleSyncResult();

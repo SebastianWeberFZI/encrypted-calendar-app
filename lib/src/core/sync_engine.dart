@@ -1,11 +1,11 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:cryptography/cryptography.dart';
 
 import 'app_log.dart';
 import 'crypto_service.dart';
 import 'doc_store.dart';
+import 'file_mutex.dart';
 import 'github_api.dart';
 
 const String kMetaPath = 'meta.json';
@@ -165,13 +165,12 @@ class SyncEngine {
       path.endsWith('.enc') &&
       managedDirs.any((d) => path.startsWith('$d/'));
 
-  /// Vollständiger Sync. Ein Datei-Lock verhindert, dass App und
-  /// Hintergrund-Worker gleichzeitig synchronisieren.
-  Future<SyncResult> sync() async {
-    final lockFile = File('${store.baseDir}/sync.lock');
-    await lockFile.parent.create(recursive: true);
-    final raf = await lockFile.open(mode: FileMode.write);
-    await raf.lock(FileLock.blockingExclusive);
+  /// Vollständiger Sync. Eine Sperre verhindert, dass App und
+  /// Hintergrund-Abgleich gleichzeitig synchronisieren – auch wenn beide als
+  /// Isolate im selben Prozess laufen.
+  Future<SyncResult> sync() => FileMutex('${store.baseDir}/sync.mutex').run(_sync);
+
+  Future<SyncResult> _sync() async {
     final started = DateTime.now();
     try {
       final result = SyncResult();
@@ -211,9 +210,6 @@ class SyncEngine {
         AppLog.warn(logTag, 'Abgleich fehlgeschlagen: $e');
       }
       rethrow;
-    } finally {
-      await raf.unlock();
-      await raf.close();
     }
   }
 

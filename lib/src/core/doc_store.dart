@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'app_log.dart';
 import 'crypto_service.dart';
 
 /// Erhöhen, wenn eine neue App-Version Dokumente lesen kann, die frühere
@@ -179,6 +181,18 @@ class DocStore {
 
   Future<void> init() async {
     await _docDir.create(recursive: true);
+    // Liegengebliebene Zwischendateien abgebrochener Schreibvorgänge.
+    try {
+      await for (final f in Directory(baseDir).list()) {
+        final name = f.uri.pathSegments.last;
+        if (f is File &&
+            name.startsWith('state.enc.') &&
+            name.endsWith('.tmp') &&
+            DateTime.now().difference((await f.stat()).modified) > const Duration(minutes: 10)) {
+          await f.delete();
+        }
+      }
+    } catch (_) {}
     _docs.clear();
     remoteShas.clear();
     _pending.clear();
@@ -305,8 +319,11 @@ class DocStore {
       {bool fromRemote = false, bool persistState = true}) async {
     _docs.remove(path);
     _dropBase(path);
-    final f = _docFile(path);
-    if (await f.exists()) await f.delete();
+    try {
+      await _docFile(path).delete();
+    } on PathNotFoundException {
+      // Schon weg (z. B. vom anderen Prozess gelöscht).
+    }
     if (fromRemote) {
       remoteShas.remove(path);
       _pending.removeWhere((op) => op.path == path);
@@ -334,29 +351,48 @@ class DocStore {
     }
   }
 
+  /// Eigener Name für die Zwischendatei: App und Hintergrund-Abgleich laufen
+  /// in getrennten Isolaten mit je eigenem Store und dürfen sich die Datei
+  /// nicht gegenseitig wegbenennen (sonst PathNotFoundException).
+  final String _tmpTag = '${pid}_${Random().nextInt(1 << 32).toRadixString(36)}';
+
   /// Serialisierte Schreibvorgänge – parallele Aufrufe überholen sich nicht.
+  /// Ein fehlgeschlagener Schreibvorgang blockiert die folgenden nicht –
+  /// sonst scheiterte jeder weitere Abgleich bis zum Neustart der App.
   Future<void> saveState() {
-    _stateWrite = _stateWrite.then((_) async {
-      final bytes = await crypto.encryptJson({
-        ..._stateExtra,
-        'remote_shas': remoteShas,
-        'pending': _pending.map((p) => p.toJson()).toList(),
-        'last_tree_sha': lastTreeSha,
-        'last_sync': lastSync?.toIso8601String(),
-        'meta_sha': metaSha,
-        'repo_schema': repoSchema,
-        'unreadable': unreadable,
-        'newer': newer,
-        'reader': kReaderGeneration,
-        'push_log': pushLog,
-        'push_paused_until': pushPausedUntil?.toIso8601String(),
-      }, key);
-      final tmp = File('${_stateFile.path}.tmp');
+    final next = _stateWrite.then((_) {}, onError: (_) {}).then((_) => _writeState());
+    _stateWrite = next;
+    return next;
+  }
+
+  Future<void> _writeState() async {
+    final bytes = await crypto.encryptJson({
+      ..._stateExtra,
+      'remote_shas': remoteShas,
+      'pending': _pending.map((p) => p.toJson()).toList(),
+      'last_tree_sha': lastTreeSha,
+      'last_sync': lastSync?.toIso8601String(),
+      'meta_sha': metaSha,
+      'repo_schema': repoSchema,
+      'unreadable': unreadable,
+      'newer': newer,
+      'reader': kReaderGeneration,
+      'push_log': pushLog,
+      'push_paused_until': pushPausedUntil?.toIso8601String(),
+    }, key);
+    final tmp = File('${_stateFile.path}.$_tmpTag.tmp');
+    try {
+      await _stateFile.parent.create(recursive: true);
       await tmp.writeAsBytes(bytes, flush: true);
       await tmp.rename(_stateFile.path);
       _stateLoadedAt = (await _stateFile.stat()).modified;
-    });
-    return _stateWrite;
+    } catch (e) {
+      AppLog.error('speicher', 'Sync-Zustand nicht gespeichert', e);
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
+      rethrow;
+    }
   }
 
   /// Löscht alle lokalen Daten dieser Datenquelle.

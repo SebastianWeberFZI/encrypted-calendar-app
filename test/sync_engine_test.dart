@@ -143,6 +143,31 @@ void main() {
     expect(b.get('events/1.enc'), containsPair('start', '20'));
   });
 
+  test('App und Hintergrund speichern gleichzeitig ohne PathNotFoundException', () async {
+    final (ui, _) = await device('a');
+    final (bg, _) = await device('a');
+    await ui.put('events/1.enc', doc('A', DateTime(2026, 1, 1)));
+    await Future.wait([
+      for (var i = 0; i < 30; i++) ...[ui.saveState(), bg.saveState()],
+    ]);
+    final names = [await for (final f in Directory('${tmp.path}/a').list()) f.uri.pathSegments.last];
+    expect(names.where((n) => n.endsWith('.tmp')), isEmpty);
+  });
+
+  test('Ein fehlgeschlagenes Speichern blockiert die folgenden nicht', () async {
+    final (a, _) = await device('a');
+    await a.put('events/1.enc', doc('A', DateTime(2026, 1, 1)));
+    final state = File('${tmp.path}/a/state.enc');
+    await state.delete();
+    await Directory(state.path).create(); // Umbenennen auf ein Verzeichnis scheitert
+    await expectLater(a.saveState(), throwsA(isA<FileSystemException>()));
+    await Directory(state.path).delete();
+    await a.saveState();
+    expect(await state.exists(), isTrue);
+    final (again, _) = await device('a');
+    expect(again.pendingCount, 1);
+  });
+
   test('Veraltete Version aus dem anderen Prozess ist kein Konflikt', () async {
     final conflicts = <String>[];
     // App und Hintergrund-Abgleich: zwei Stores auf derselben lokalen Kopie.
