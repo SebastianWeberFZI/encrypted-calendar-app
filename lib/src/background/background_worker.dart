@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:workmanager/workmanager.dart';
 
 import '../calendar_repository.dart';
+import '../core/app_log.dart';
 import '../core/source_config.dart';
 import '../services/email_service.dart';
 import '../services/notification_service.dart';
@@ -23,8 +24,8 @@ void callbackDispatcher() {
     DartPluginRegistrant.ensureInitialized();
     try {
       await runBackgroundCycle(force: input?['force'] == true);
-    } catch (e) {
-      debugPrint('Hintergrund-Sync fehlgeschlagen: $e');
+    } catch (e, st) {
+      AppLog.error('hintergrund', 'Durchlauf fehlgeschlagen', e, e is Error ? st : null);
     }
     return true;
   });
@@ -35,6 +36,7 @@ void callbackDispatcher() {
 Future<void> runBackgroundCycle({bool force = false}) async {
   final settings = await LocalSettings.load();
   final dir = await getApplicationSupportDirectory();
+  await AppLog.init(dir.path, process: 'bg');
   final configStore = SourceConfigStore();
   final repo = CalendarRepository(
       baseDir: dir.path,
@@ -46,6 +48,7 @@ Future<void> runBackgroundCycle({bool force = false}) async {
   final beat = settings.foregroundBeat;
   final appActive =
       !force && beat != null && DateTime.now().difference(beat).inMinutes < 3;
+  AppLog.info('hintergrund', appActive ? 'Durchlauf (App offen, kein Abgleich)' : 'Durchlauf mit Abgleich${force ? ' (angestoßen)' : ''}');
   if (!appActive) {
     await repo.syncAll();
     // Abgleich mit dem Google-Kalender des Handys (falls eingeschaltet);

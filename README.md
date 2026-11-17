@@ -81,6 +81,19 @@ Danach:
 - Zuordnungen liegen nur auf diesem Handy (`google_sync/state.json`); übernommene Termine tragen im Repo
   das Feld `google` (ID im Handy-Kalender, Besitzerin), der Kalender das Feld `sync` (Besitzerin).
 
+## Protokoll und Konflikte
+- Die App notiert lokal, was beim Abgleich passiert (gesendet, empfangen, Konflikte mit den abweichenden
+  Feldern, Google-Abgleich, Fehler) – eine Datei je Tag, 14 Tage, App (`[ui]`) und Hintergrund (`[bg]`) gemeinsam.
+- Einstellungen → Info → **Protokoll**: ansehen, löschen oder „In Download ablegen“. Die Dateien landen unter
+  `Download/Kalender-Protokoll/` (`kalender-JJJJ-MM-TT.txt` plus `kalender-info.txt` mit Version, Quellen und
+  ausstehenden Änderungen) und lassen sich per USB-Kabel auf den Rechner ziehen. Schlüssel und Tokens stehen nicht
+  darin, bei Konflikten aber Termininhalte.
+- Eine „(Konflikt)“-Kopie entsteht nur noch, wenn beide Seiten dasselbe Feld verschieden geändert haben
+  (Beginn, Ende, Ganztägig und Wiederholung zählen dabei als ein Feld). Kein Konflikt: gleicher Inhalt auf
+  beiden Seiten; remote liegt ein Stand, auf dem die lokale Änderung beruht (z. B. hat der Hintergrund-Abgleich
+  ihn schon gesendet); oder beide haben verschiedene Felder geändert (z. B. hier den Titel, dort den Ort) –
+  dann werden beide Änderungen zusammengeführt.
+
 ## Daten-Repo
 ```
 meta.json            KDF-Parameter (unverschlüsselt)

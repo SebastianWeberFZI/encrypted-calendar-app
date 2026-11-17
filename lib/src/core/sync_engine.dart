@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:cryptography/cryptography.dart';
 
+import 'app_log.dart';
 import 'crypto_service.dart';
 import 'doc_store.dart';
 import 'github_api.dart';
@@ -45,6 +46,13 @@ class SyncResult {
   int pulled = 0;
   int conflicts = 0;
 
+  /// Gleichzeitige Änderungen an verschiedenen Feldern, zusammengeführt.
+  int merged = 0;
+
+  /// Lokaler Stand wurde vor dem Abgleich von der Platte neu geladen, weil
+  /// ein anderer Prozess (App bzw. Hintergrund-Abgleich) ihn geändert hat.
+  bool reloaded = false;
+
   /// Beim Pull übersprungene, nicht entschlüsselbare Dateien.
   int skipped = 0;
 
@@ -56,6 +64,7 @@ class SyncResult {
   @override
   String toString() =>
       'gesendet: $pushed, empfangen: $pulled, Konflikte: $conflicts'
+      '${merged > 0 ? ', zusammengeführt: $merged' : ''}'
       '${skipped > 0 ? ', übersprungen: $skipped' : ''}';
 }
 
@@ -63,6 +72,52 @@ class SyncResult {
 /// Fassung aufgerufen (z. B. um eine Konfliktkopie anzulegen).
 typedef ConflictHandler = Future<void> Function(
     String path, Map<String, dynamic> loser, Map<String, dynamic> winner);
+
+/// Führt zwei Fassungen zusammen, die beide auf [base] beruhen: Felder, die
+/// nur eine Seite geändert hat, kommen von dieser Seite. Haben beide dasselbe
+/// Feld (bzw. dieselbe Feldgruppe aus [groups]) verschieden geändert, ist es
+/// ein echter Konflikt: null. Zeitstempel und Bearbeiter kommen von der
+/// jüngeren Fassung.
+Map<String, dynamic>? mergeDocs(
+    Map<String, dynamic> base, Map<String, dynamic> local, Map<String, dynamic> remote,
+    {List<Set<String>> groups = const []}) {
+  const meta = {'updated_at', 'updated_by'};
+  final keys = {...base.keys, ...local.keys, ...remote.keys}..removeAll(meta);
+  final units = <Set<String>>[];
+  final grouped = <String>{};
+  for (final g in groups) {
+    final u = g.intersection(keys);
+    if (u.isEmpty) continue;
+    units.add(u);
+    grouped.addAll(u);
+  }
+  for (final k in keys) {
+    if (!grouped.contains(k)) units.add({k});
+  }
+  String unit(Map<String, dynamic> m, Set<String> u) => canonicalJson({
+        for (final k in u) k: m.containsKey(k) ? m[k] : const {'\u0000': 'fehlt'},
+      });
+  final merged = <String, dynamic>{};
+  for (final u in units) {
+    final b = unit(base, u), l = unit(local, u), r = unit(remote, u);
+    final Map<String, dynamic> src;
+    if (l == r || r == b) {
+      src = local;
+    } else if (l == b) {
+      src = remote;
+    } else {
+      return null;
+    }
+    for (final k in u) {
+      if (src.containsKey(k)) merged[k] = src[k];
+    }
+  }
+  final later = docUpdatedAt(remote).isAfter(docUpdatedAt(local)) ? remote : local;
+  for (final k in meta) {
+    if (later.containsKey(k)) merged[k] = later[k];
+  }
+  return merged;
+}
 
 DateTime docUpdatedAt(Map<String, dynamic> doc) {
   final v = doc['updated_at'];
@@ -85,7 +140,16 @@ class SyncEngine {
     required this.managedDirs,
     this.onConflict,
     this.commitMessage = 'sync',
+    this.logTag = 'sync',
+    this.mergeGroups = const [],
   });
+
+  /// Felder, die beim Zusammenführen nur gemeinsam von einer Seite kommen
+  /// (z. B. Beginn, Ende und Wiederholung eines Termins).
+  final List<Set<String>> mergeGroups;
+
+  /// Kennung im Protokoll, z. B. „sync/Gemeinsam“.
+  final String logTag;
 
   final DocStore store;
   final GithubApi api;
@@ -108,8 +172,17 @@ class SyncEngine {
     await lockFile.parent.create(recursive: true);
     final raf = await lockFile.open(mode: FileMode.write);
     await raf.lock(FileLock.blockingExclusive);
+    final started = DateTime.now();
     try {
       final result = SyncResult();
+      // Erst jetzt, mit der Sperre: Hat der andere Prozess inzwischen gesendet
+      // oder empfangen, mit dessen Stand weitermachen. Sonst gingen schon
+      // gesendete Änderungen mit veralteter Version noch einmal raus.
+      if (await store.changedOnDisk()) {
+        await store.init();
+        result.reloaded = true;
+        AppLog.info(logTag, 'Stand von der Platte neu geladen (anderer Prozess)');
+      }
       // Repo von einer neueren App umgestellt: nichts schreiben, nichts laden.
       // Nur meta.json wird (bei Änderung) erneut geprüft – ein Request.
       if (store.repoSchema > kSupportedRepoSchema) {
@@ -125,7 +198,19 @@ class SyncEngine {
       await _pull(result);
       store.lastSync = DateTime.now();
       await store.saveState();
+      if (result.pushed + result.pulled + result.conflicts + result.skipped > 0 || store.pendingCount > 0) {
+        AppLog.info(logTag,
+            'Abgleich: $result, ausstehend: ${store.pendingCount}, ${DateTime.now().difference(started).inMilliseconds} ms');
+      }
       return result;
+    } catch (e, st) {
+      // Programmfehler mit Aufrufstapel, Netz- und API-Fehler kurz.
+      if (e is Error) {
+        AppLog.error(logTag, 'Abgleich fehlgeschlagen', e, st);
+      } else {
+        AppLog.warn(logTag, 'Abgleich fehlgeschlagen: $e');
+      }
+      rethrow;
     } finally {
       await raf.unlock();
       await raf.close();
@@ -165,6 +250,7 @@ class SyncEngine {
       } on GithubApiException catch (e) {
         if (!e.isRateLimited) rethrow;
         // Gedrosselt: eine Weile nichts senden, Empfangen geht weiter.
+        AppLog.warn(logTag, 'von GitHub gedrosselt, Senden pausiert 15 Min.');
         store.pushPausedUntil = DateTime.now().add(const Duration(minutes: 15));
         await store.saveState();
         return budget;
@@ -182,20 +268,36 @@ class SyncEngine {
       return;
     }
     final bytes = await crypto.encryptJson(doc, key);
+    final baseSha = store.remoteShas[op.path];
     try {
-      final newSha = await api.putFile(op.path, bytes, commitMessage,
-          sha: store.remoteShas[op.path]);
+      final newSha = await api.putFile(op.path, bytes, commitMessage, sha: baseSha);
       store.markSynced(op, newSha: newSha);
       result.pushed++;
+      AppLog.info(logTag, 'gesendet ${op.path} (${_short(baseSha)} → ${_short(newSha)})');
     } on GithubApiException catch (e) {
       if (!e.isConflict) rethrow;
-      await _resolveUpsertConflict(op, doc, bytes, result);
+      await _resolveUpsertConflict(op, doc, bytes, result, baseSha);
     }
     await store.saveState();
   }
 
+  static String _short(String? sha) => sha == null ? 'neu' : sha.substring(0, sha.length < 7 ? sha.length : 7);
+
+  static String _clip(String s) => s.length > 90 ? '${s.substring(0, 87)}…' : s;
+
+  /// Was sich zwischen zwei Fassungen unterscheidet (für das Protokoll).
+  static String describeDiff(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final keys = {...a.keys, ...b.keys}..removeAll(const ['updated_at', 'updated_by']);
+    final parts = [
+      for (final k in keys.toList()..sort())
+        if (canonicalJson(a[k]) != canonicalJson(b[k]))
+          '$k: ${_clip(canonicalJson(a[k]))} ≠ ${_clip(canonicalJson(b[k]))}',
+    ];
+    return parts.isEmpty ? 'kein inhaltlicher Unterschied' : parts.join('; ');
+  }
+
   Future<void> _resolveUpsertConflict(PendingOp op, Map<String, dynamic> local,
-      List<int> bytes, SyncResult result) async {
+      List<int> bytes, SyncResult result, String? baseSha) async {
     final remoteFile = await api.getFile(op.path);
     if (remoteFile == null) {
       // Remote gelöscht, lokal geändert: lokale Fassung neu anlegen.
@@ -215,6 +317,7 @@ class SyncEngine {
       store.unreadable[op.path] = remoteFile.sha;
       store.newer[op.path] = remoteFile.sha;
       result.skipped++;
+      AppLog.warn(logTag, '${op.path}: remote im Format einer neueren App-Version, lokale Änderung verworfen');
       return;
     } on DecryptionFailedException {
       // Unlesbare Remote-Fassung: mit der lokalen überschreiben.
@@ -222,10 +325,62 @@ class SyncEngine {
           sha: remoteFile.sha);
       store.markSynced(op, newSha: newSha);
       result.pushed++;
+      AppLog.warn(logTag, '${op.path}: remote unlesbar, mit lokaler Fassung überschrieben');
+      return;
+    }
+    final stale = 'gespeicherte Version ${_short(baseSha)}, remote ${_short(remoteFile.sha)}';
+    if (sameDocContent(local, remote)) {
+      // Beide Seiten haben dasselbe gespeichert (z. B. App und Hintergrund-
+      // Abgleich dieselbe Änderung): kein Konflikt, Stand übernehmen.
+      store.remoteShas[op.path] = remoteFile.sha;
+      await store.put(op.path, remote, fromRemote: true, persistState: false);
+      store.markSynced(op);
+      AppLog.info(logTag, '${op.path}: gleicher Inhalt auf beiden Seiten, kein Konflikt ($stale)');
+      return;
+    }
+    if (op.known.contains(docHash(remote))) {
+      // Remote liegt ein Stand, auf dem die lokale Änderung beruht – nur die
+      // gespeicherte Version war veraltet: lokale Fassung senden, kein Konflikt.
+      final newSha = await api.putFile(op.path, bytes, commitMessage, sha: remoteFile.sha);
+      store.markSynced(op, newSha: newSha);
+      result.pushed++;
+      AppLog.info(logTag, '${op.path}: veralteter Stand, lokale Änderung übernommen ($stale)');
+      return;
+    }
+    final base = await store.baseOf(op.path);
+    final merged = base == null ? null : mergeDocs(base, local, remote, groups: mergeGroups);
+    if (merged != null) {
+      // Beide haben verschiedene Felder geändert: beides übernehmen.
+      final changed = describeDiff(local, remote);
+      if (sameDocContent(merged, remote)) {
+        store.remoteShas[op.path] = remoteFile.sha;
+        await store.put(op.path, remote, fromRemote: true, persistState: false);
+        store.markSynced(op);
+      } else {
+        final newSha = await api.putFile(op.path, await crypto.encryptJson(merged, key), commitMessage,
+            sha: remoteFile.sha);
+        store.remoteShas[op.path] = newSha;
+        await store.put(op.path, merged, fromRemote: true, persistState: false);
+        store.markSynced(op, newSha: newSha);
+        result.pushed++;
+      }
+      result.merged++;
+      result.changes.add(RemoteChange(op.path, local, merged));
+      AppLog.info(logTag,
+          '${op.path}: verschiedene Felder geändert, zusammengeführt ($stale; lokal ${local['updated_by']}, '
+          'remote ${remote['updated_by']}; $changed)');
       return;
     }
     result.conflicts++;
-    if (docUpdatedAt(remote).isAfter(docUpdatedAt(local))) {
+    final remoteWins = docUpdatedAt(remote).isAfter(docUpdatedAt(local));
+    AppLog.warn(
+        logTag,
+        'KONFLIKT ${op.path}: lokal ${local['updated_at']} (${local['updated_by']}, geändert ${op.at.toIso8601String()}), '
+        'remote ${remote['updated_at']} (${remote['updated_by']}); $stale; '
+        'bekannte Stände ${op.known.length}, Ausgangsfassung ${base == null ? 'unbekannt' : 'bekannt'}; '
+        '${remoteWins ? 'remote' : 'lokal'} gewinnt; '
+        'Unterschiede: ${describeDiff(local, remote)}');
+    if (remoteWins) {
       // Remote gewinnt.
       store.remoteShas[op.path] = remoteFile.sha;
       await store.put(op.path, remote, fromRemote: true);
@@ -252,12 +407,14 @@ class SyncEngine {
       await api.deleteFile(op.path, sha, commitMessage);
       store.markSynced(op);
       result.pushed++;
+      AppLog.info(logTag, 'gelöscht ${op.path} (${_short(sha)})');
     } on GithubApiException catch (e) {
       if (!e.isConflict) rethrow;
       // Remote zwischenzeitlich geändert: Änderung schlägt Löschung.
       final remoteFile = await api.getFile(op.path);
       store.markSynced(op);
       if (remoteFile == null) return;
+      AppLog.warn(logTag, '${op.path}: lokal gelöscht, remote inzwischen geändert – Änderung bleibt');
       try {
         final remote = await crypto.decryptDoc(remoteFile.content!, key);
         store.remoteShas[op.path] = remoteFile.sha;
@@ -300,9 +457,12 @@ class SyncEngine {
         try {
           final doc = await crypto.decryptDoc(bytes, key);
           final before = store.get(e.key);
+          final was = store.remoteShas[e.key];
           store.remoteShas[e.key] = e.value;
           await store.put(e.key, doc, fromRemote: true, persistState: false);
           result.pulled++;
+          AppLog.info(logTag,
+              'empfangen ${e.key} (${_short(was)} → ${_short(e.value)}, ${doc['updated_at']}, ${doc['updated_by']})');
           result.changes.add(RemoteChange(e.key, before, doc));
         } on UnsupportedFormatException {
           // Von einer neueren App-Version: die veraltete lokale Kopie
@@ -332,6 +492,7 @@ class SyncEngine {
       await store.delete(path, fromRemote: true, persistState: false);
       result.pulled++;
       result.changes.add(RemoteChange(path, before, null));
+      AppLog.info(logTag, 'remote gelöscht $path');
     }
     store.lastTreeSha = tree.sha;
     result.newer = store.newer.length;

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -14,6 +16,7 @@ import 'calendars_screen.dart';
 import 'email_settings_screen.dart';
 import 'format.dart';
 import 'google_sync_screen.dart';
+import 'log_screen.dart';
 import 'source_setup_screen.dart';
 import 'theme.dart';
 
@@ -195,6 +198,17 @@ class SettingsScreen extends StatelessWidget {
                     : 'Letzter Sync ${fmtDate(state.repo.lastSync!)} ${fmtTime(state.repo.lastSync!)}'),
               ),
             ),
+            ListTile(
+              leading: const Icon(Icons.receipt_long_outlined),
+              title: const Text('Protokoll'),
+              subtitle: const Text('Was beim Abgleich passiert – zum Ablegen im Download-Ordner'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => LogScreen(
+                          folder: 'Kalender-Protokoll', prefix: 'kalender', info: _logInfo))),
+            ),
             if (kWerkstatt && defaultTargetPlatform == TargetPlatform.android)
               ListTile(
                 leading: const Icon(Icons.schedule_send_outlined),
@@ -224,6 +238,44 @@ class SettingsScreen extends StatelessWidget {
         );
       },
     );
+  }
+
+  /// Begleittext zum exportierten Protokoll (keine Schlüssel oder Tokens).
+  Future<String> _logInfo() async {
+    final p = await PackageInfo.fromPlatform();
+    final s = state.settings;
+    final b = StringBuffer()
+      ..writeln('Kalender ${p.version}+${p.buildNumber}${kWerkstatt ? ' (Werkstatt)' : ''}')
+      ..writeln('Exportiert: ${DateTime.now().toIso8601String()}')
+      ..writeln('System: ${Platform.operatingSystem} ${Platform.operatingSystemVersion}')
+      ..writeln('Name: ${s.userName}')
+      ..writeln();
+    for (final src in state.repo.sources) {
+      final c = src.config;
+      b.writeln('Quelle „${c.label}“ (${c.id}): ${c.owner}/${c.repo} @ ${c.branch}');
+      b.writeln('  letzter Sync: ${src.store.lastSync?.toIso8601String() ?? '–'}, '
+          'Einträge: ${src.store.docs.length}, ausstehend: ${src.store.pendingCount}');
+      if (src.error != null) b.writeln('  Fehler: ${src.error}');
+      if (src.notice != null) b.writeln('  Hinweis: ${src.notice}');
+      for (final op in src.store.pending) {
+        b.writeln('  ausstehend: ${op.isDelete ? 'löschen' : 'senden'} ${op.path} '
+            'seit ${op.at.toIso8601String()} (${op.known.length} bekannte Stände)');
+      }
+    }
+    b
+      ..writeln()
+      ..writeln('Kalender: ${state.calendars.map((c) => '${c.name} = ${c.key}').join(', ')}')
+      ..writeln()
+      ..writeln('Google-Abgleich: ${s.googleSync ? 'an' : 'aus'}');
+    if (s.googleSync) {
+      b
+        ..writeln('  übernehmen aus Handy-Kalendern ${s.googleImportFrom} nach ${s.googleImportCalendar}')
+        ..writeln('  App-Termine nach Handy-Kalender ${s.googleDefaultTarget}, abweichend ${s.googleTargets}')
+        ..writeln('  Vergangenheit: ${s.googlePastDays} Tage, Erinnerungen: ${s.googleReminders ? 'ja' : 'nein'}')
+        ..writeln('  letzter Lauf: ${s.googleLastRun?.toIso8601String() ?? '–'}'
+            '${s.googleStatusIsError ? ' (Fehler)' : ''}: ${s.googleStatus.replaceAll('\n', ' ⏎ ')}');
+    }
+    return b.toString();
   }
 
   Future<void> _pickWidgetCalendars(BuildContext context) async {

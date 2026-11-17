@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:system_calendar/system_calendar.dart';
 
 import '../calendar_repository.dart';
+import '../core/app_log.dart';
 import '../models/calendar_models.dart';
 import '../settings.dart';
 import 'device_calendar.dart';
@@ -63,6 +64,15 @@ class GoogleSyncService {
       ).run();
       final now = DateTime.now();
       settings.googleLastRun = now;
+      if (r.log.isNotEmpty || r.warnings.isNotEmpty) {
+        AppLog.info('google', r.summary);
+        for (final line in r.log) {
+          AppLog.info('google', line);
+        }
+        for (final w in r.warnings) {
+          AppLog.warn('google', w);
+        }
+      }
       if (r.log.isNotEmpty) {
         String two(int v) => v.toString().padLeft(2, '0');
         settings.googleLog = [
@@ -79,7 +89,8 @@ class GoogleSyncService {
         settings.googleStatusIsError = false;
       }
       return r;
-    } catch (e) {
+    } catch (e, st) {
+      AppLog.error('google', 'Abgleich fehlgeschlagen', e, e is Error ? st : null);
       settings.googleStatus = e is GoogleSyncException ? e.message : 'Abgleich fehlgeschlagen: $e';
       settings.googleStatusIsError = true;
       return null;

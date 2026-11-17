@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cryptography/cryptography.dart';
@@ -11,16 +12,30 @@ const int kReaderGeneration = 1;
 
 /// Ausstehende, noch nicht synchronisierte Änderung an einem Dokument.
 class PendingOp {
-  PendingOp({required this.path, required this.isDelete, DateTime? at})
-      : at = at ?? DateTime.now();
+  PendingOp({required this.path, required this.isDelete, DateTime? at, List<String>? known})
+      : at = at ?? DateTime.now(),
+        known = known ?? const [];
 
   /// Pfad im Daten-Repo, z. B. `events/<uuid>.enc`.
   final String path;
   final bool isDelete;
   final DateTime at;
 
-  Map<String, dynamic> toJson() =>
-      {'path': path, 'delete': isDelete, 'at': at.toIso8601String()};
+  /// Prüfsummen ([docHash]) der Fassungen, auf denen diese Änderung beruht:
+  /// der zuletzt abgeglichene Stand und alle lokalen Zwischenstände seitdem.
+  /// Findet der Abgleich remote eine davon vor, ist das kein Konflikt –
+  /// nur die gespeicherte Version war veraltet (z. B. nach einem Abgleich
+  /// im Hintergrund).
+  final List<String> known;
+
+  static const maxKnown = 20;
+
+  Map<String, dynamic> toJson() => {
+        'path': path,
+        'delete': isDelete,
+        'at': at.toIso8601String(),
+        if (known.isNotEmpty) 'known': known,
+      };
 
   /// null bei unbrauchbarem Eintrag (z. B. von einer anderen App-Version).
   static PendingOp? tryParse(Object? json) {
@@ -28,12 +43,43 @@ class PendingOp {
     final path = json['path'];
     if (path is! String || path.isEmpty) return null;
     final at = json['at'];
+    final known = json['known'];
     return PendingOp(
       path: path,
       isDelete: json['delete'] == true,
       at: at is String ? DateTime.tryParse(at) : null,
+      known: known is List ? known.whereType<String>().toList() : null,
     );
   }
+}
+
+/// JSON mit sortierten Schlüsseln – gleicher Inhalt ergibt denselben Text.
+String canonicalJson(Object? v) {
+  Object? norm(Object? x) => switch (x) {
+        Map() => {
+            for (final k in (x.keys.map((k) => '$k').toList()..sort())) k: norm(x[k]),
+          },
+        List() => [for (final e in x) norm(e)],
+        _ => x,
+      };
+  return jsonEncode(norm(v));
+}
+
+/// Prüfsumme eines Dokuments (FNV-1a, 64 Bit, über [canonicalJson]).
+String docHash(Map<String, dynamic> doc) {
+  var h = 0xcbf29ce484222325;
+  for (final b in utf8.encode(canonicalJson(doc))) {
+    h ^= b;
+    h *= 0x100000001b3; // 64-Bit-Arithmetik läuft über, wie gewollt
+  }
+  return h.toUnsigned(64).toRadixString(16);
+}
+
+/// Gleicher Inhalt, wenn man vom Zeitstempel und vom Bearbeiter absieht?
+bool sameDocContent(Map<String, dynamic> a, Map<String, dynamic> b) {
+  Map<String, dynamic> strip(Map<String, dynamic> m) =>
+      {for (final e in m.entries) if (e.key != 'updated_at' && e.key != 'updated_by') e.key: e.value};
+  return canonicalJson(strip(a)) == canonicalJson(strip(b));
 }
 
 /// Lokaler, verschlüsselter Dokument-Store – Quelle der Wahrheit (Offline-First).
@@ -105,6 +151,32 @@ class DocStore {
   String _pathOf(File f) =>
       f.uri.pathSegments.last.replaceAll('__', '/');
 
+  /// Abgeglichene Fassung, auf der eine ausstehende lokale Änderung beruht
+  /// (verschlüsselt, wie die Dokumente) – Grundlage, um beim Konflikt
+  /// Änderungen an verschiedenen Feldern zusammenzuführen.
+  Directory get _baseDir => Directory('$baseDir/base');
+  File _baseFile(String path) =>
+      File('$baseDir/base/${path.replaceAll('/', '__')}');
+
+  void _dropBase(String path) {
+    try {
+      final f = _baseFile(path);
+      if (f.existsSync()) f.deleteSync();
+    } catch (_) {}
+  }
+
+  /// Die abgeglichene Fassung, auf der die ausstehende Änderung beruht;
+  /// null, wenn unbekannt (z. B. neues Dokument).
+  Future<Map<String, dynamic>?> baseOf(String path) async {
+    try {
+      final f = _baseFile(path);
+      if (!await f.exists()) return null;
+      return await crypto.decryptDoc(await f.readAsBytes(), key);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> init() async {
     await _docDir.create(recursive: true);
     _docs.clear();
@@ -128,6 +200,16 @@ class DocStore {
         // über die SHAs wieder ab – lieber einmal mehr laden als abstürzen.
         remoteShas.clear();
         _pending.clear();
+      }
+    }
+    if (await _baseDir.exists()) {
+      final open = {for (final op in _pending) if (!op.isDelete) op.path};
+      await for (final f in _baseDir.list()) {
+        if (f is File && !open.contains(_pathOf(f))) {
+          try {
+            await f.delete();
+          } catch (_) {}
+        }
       }
     }
     await for (final entity in _docDir.list()) {
@@ -195,15 +277,34 @@ class DocStore {
   /// Remote-Ständen (erzeugt keinen Queue-Eintrag).
   Future<void> put(String path, Map<String, dynamic> data,
       {bool fromRemote = false, bool persistState = true}) async {
+    final before = _docs[path];
+    final earlier = _pending.where((p) => p.path == path && !p.isDelete).firstOrNull;
+    if (fromRemote) {
+      _dropBase(path);
+    } else if (earlier == null && before != null && !identical(before, data) && remoteShas.containsKey(path)) {
+      // Erste lokale Änderung seit dem Abgleich: die Fassung sichern, die
+      // dieser Prozess zuletzt abgeglichen hat und auf der die Änderung beruht.
+      try {
+        await _baseDir.create(recursive: true);
+        await _baseFile(path).writeAsBytes(await crypto.encryptJson(before, key));
+      } catch (_) {}
+    }
     _docs[path] = data;
     await _docFile(path).writeAsBytes(await crypto.encryptJson(data, key));
-    if (!fromRemote) _enqueue(PendingOp(path: path, isDelete: false));
+    if (!fromRemote) {
+      final known = [...?earlier?.known, if (before != null && !identical(before, data)) docHash(before)];
+      _enqueue(PendingOp(
+          path: path,
+          isDelete: false,
+          known: known.length > PendingOp.maxKnown ? known.sublist(known.length - PendingOp.maxKnown) : known));
+    }
     if (persistState) await saveState();
   }
 
   Future<void> delete(String path,
       {bool fromRemote = false, bool persistState = true}) async {
     _docs.remove(path);
+    _dropBase(path);
     final f = _docFile(path);
     if (await f.exists()) await f.delete();
     if (fromRemote) {
@@ -225,6 +326,7 @@ class DocStore {
 
   void markSynced(PendingOp op, {String? newSha}) {
     _pending.remove(op);
+    if (!hasPendingFor(op.path)) _dropBase(op.path);
     if (op.isDelete) {
       remoteShas.remove(op.path);
     } else if (newSha != null) {

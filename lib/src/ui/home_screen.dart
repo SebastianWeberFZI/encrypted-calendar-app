@@ -95,6 +95,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final theme = Theme.of(context);
         final today = dateOnly(DateTime.now());
         return Scaffold(
+          // Keine Eingabefelder hier: die Tastatur eines darüberliegenden
+          // Editors soll Monatsansicht und Tagesliste nicht neu umbrechen.
+          resizeToAvoidBottomInset: false,
           appBar: AppBar(
             titleSpacing: 20,
             title: InkWell(

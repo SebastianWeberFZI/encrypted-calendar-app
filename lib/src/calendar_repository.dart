@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cryptography/cryptography.dart';
 import 'package:uuid/uuid.dart';
 
+import 'core/app_log.dart';
 import 'core/crypto_service.dart';
 import 'core/doc_store.dart';
 import 'core/github_api.dart';
@@ -96,6 +97,11 @@ class CalendarRepository {
       managedDirs: const ['calendars', 'events'],
       onConflict: (path, loser, winner) =>
           _conflictCopy(store, path, loser, winner),
+      logTag: 'sync/${cfg.label}',
+      // Zeitangaben eines Termins gehören zusammen (sonst z. B. Ende vor Beginn).
+      mergeGroups: const [
+        {'all_day', 'start', 'end', 'time_zone', 'recurrence', 'exdates'},
+      ],
     );
     return SourceRuntime(cfg, key, store, api, engine);
   }
@@ -105,6 +111,9 @@ class CalendarRepository {
       Map<String, dynamic> loser, Map<String, dynamic> winner) async {
     if (!path.startsWith('events/')) return;
     final id = const Uuid().v4();
+    AppLog.warn('konflikt',
+        'Kopie events/$id.enc „${loser['title'] ?? ''} (Konflikt)“ aus der unterlegenen Fassung von $path '
+        '(${loser['updated_at']}, ${loser['updated_by']}; gewonnen: ${winner['updated_at']}, ${winner['updated_by']})');
     await store.put('events/$id.enc', {
       ...loser,
       'id': id,
@@ -120,6 +129,7 @@ class CalendarRepository {
       if (await s.store.changedOnDisk()) {
         await s.store.init();
         changed = true;
+        AppLog.info('sync/${s.config.label}', 'Stand von der Platte neu geladen (Hintergrund-Abgleich)');
       }
     }
     if (changed) touch();
@@ -279,7 +289,7 @@ class CalendarRepository {
       s.lastResult = r;
       s.error = null;
       s.notice = r.newer > 0 ? kNewerDataHint : null;
-      if (r.pulled > 0 || r.conflicts > 0 || r.newer > 0) touch();
+      if (r.reloaded || r.pulled > 0 || r.conflicts > 0 || r.merged > 0 || r.newer > 0) touch();
       return r;
     } on RepoTooNewException catch (e) {
       s.error = e.message;
@@ -288,6 +298,7 @@ class CalendarRepository {
           ? 'Token ungültig oder abgelaufen.'
           : 'Sync fehlgeschlagen: ${e.message}';
     } catch (e) {
+      // Netzwerkfehler o. Ä. – die Einzelheiten stehen schon im Protokoll.
       s.error = 'Keine Verbindung (${e.runtimeType}) – Änderungen bleiben lokal '
           'gespeichert und werden später übertragen.';
     } finally {
