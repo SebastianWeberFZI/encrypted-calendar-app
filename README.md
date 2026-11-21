@@ -93,6 +93,10 @@ Danach:
   beiden Seiten; remote liegt ein Stand, auf dem die lokale Änderung beruht (z. B. hat der Hintergrund-Abgleich
   ihn schon gesendet); oder beide haben verschiedene Felder geändert (z. B. hier den Titel, dort den Ort) –
   dann werden beide Änderungen zusammengeführt.
+- App und Hintergrund-Abgleich arbeiten mit eigenen Kopien im Speicher. Jede lokale Änderung bekommt deshalb
+  einen eigenen Eintrag im Änderungs-Journal (`pending/`), den der andere Teil nicht überschreiben kann; den
+  Sync-Zustand schreibt nur der Abgleich unter der Sync-Sperre. Nach dem Update auf 0.1.10 vergleicht der erste
+  Abgleich einmal jeden Termin mit dem Repo und sendet Änderungen nach, die nie angekommen sind.
 
 ## Daten-Repo
 ```

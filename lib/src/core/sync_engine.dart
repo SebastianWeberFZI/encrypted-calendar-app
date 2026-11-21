@@ -11,6 +11,12 @@ import 'github_api.dart';
 const String kMetaPath = 'meta.json';
 const String kKeyCheckPath = 'keycheck.enc';
 
+/// Generation des Prüfabgleichs: Läuft einmal je Gerät, wenn sie steigt
+/// (bzw. die App sie noch nicht erreicht hat), und vergleicht dann jedes
+/// Dokument mit dem Repo. 1: verlorene Vormerkungen aus Version 0.1.8/0.1.9
+/// nachsenden.
+const int kVerifyGeneration = 1;
+
 /// Datenformat-Generation des Repos (`schema` in meta.json), die diese App
 /// sicher lesen und schreiben kann.
 ///
@@ -49,6 +55,11 @@ class SyncResult {
   /// Gleichzeitige Änderungen an verschiedenen Feldern, zusammengeführt.
   int merged = 0;
 
+  /// Prüfabgleich: lokal geänderte, aber nie gesendete Dokumente (jetzt
+  /// nachgesendet) und lokal veraltete (jetzt aktualisiert).
+  int repairedOut = 0;
+  int repairedIn = 0;
+
   /// Lokaler Stand wurde vor dem Abgleich von der Platte neu geladen, weil
   /// ein anderer Prozess (App bzw. Hintergrund-Abgleich) ihn geändert hat.
   bool reloaded = false;
@@ -65,6 +76,7 @@ class SyncResult {
   String toString() =>
       'gesendet: $pushed, empfangen: $pulled, Konflikte: $conflicts'
       '${merged > 0 ? ', zusammengeführt: $merged' : ''}'
+      '${repairedOut + repairedIn > 0 ? ', nachgesendet: $repairedOut, nachgeladen: $repairedIn' : ''}'
       '${skipped > 0 ? ', übersprungen: $skipped' : ''}';
 }
 
@@ -142,7 +154,12 @@ class SyncEngine {
     this.commitMessage = 'sync',
     this.logTag = 'sync',
     this.mergeGroups = const [],
+    this.autoVerify = false,
   });
+
+  /// Den Prüfabgleich ([kVerifyGeneration]) einmal von selbst ausführen.
+  /// Lädt dafür jedes Dokument einmal herunter – nur bei kleinen Repos.
+  final bool autoVerify;
 
   /// Felder, die beim Zusammenführen nur gemeinsam von einer Seite kommen
   /// (z. B. Beginn, Ende und Wiederholung eines Termins).
@@ -166,21 +183,22 @@ class SyncEngine {
       managedDirs.any((d) => path.startsWith('$d/'));
 
   /// Vollständiger Sync. Eine Sperre verhindert, dass App und
-  /// Hintergrund-Abgleich gleichzeitig synchronisieren – auch wenn beide als
-  /// Isolate im selben Prozess laufen.
-  Future<SyncResult> sync() => FileMutex('${store.baseDir}/sync.mutex').run(_sync);
+  /// Hintergrund-Abgleich gleichzeitig synchronisieren – auch wenn sie als
+  /// Isolate im selben Prozess laufen. [verify]: zusätzlich jedes Dokument
+  /// mit dem Repo vergleichen (Prüfabgleich).
+  Future<SyncResult> sync({bool verify = false}) => FileMutex(store.mutexPath).run(() => _sync(verify));
 
-  Future<SyncResult> _sync() async {
+  Future<SyncResult> _sync(bool verify) async {
     final started = DateTime.now();
     try {
       final result = SyncResult();
-      // Erst jetzt, mit der Sperre: Hat der andere Prozess inzwischen gesendet
-      // oder empfangen, mit dessen Stand weitermachen. Sonst gingen schon
-      // gesendete Änderungen mit veralteter Version noch einmal raus.
-      if (await store.changedOnDisk()) {
-        await store.init();
+      // Erst jetzt, mit der Sperre: Was andere Stores (App, Hintergrund)
+      // inzwischen gespeichert, vorgemerkt oder abgeglichen haben, in den
+      // Speicher holen – sonst gingen Änderungen verloren oder veraltete
+      // Versionen raus.
+      if (await store.refresh()) {
         result.reloaded = true;
-        AppLog.info(logTag, 'Stand von der Platte neu geladen (anderer Prozess)');
+        AppLog.info(logTag, 'Stand von der Platte aktualisiert (anderer Prozess)');
       }
       // Repo von einer neueren App umgestellt: nichts schreiben, nichts laden.
       // Nur meta.json wird (bei Änderung) erneut geprüft – ein Request.
@@ -194,7 +212,14 @@ class SyncEngine {
       for (var round = 0; round < 3 && store.pending.isNotEmpty && budget > 0; round++) {
         budget -= await _push(result, budget);
       }
-      await _pull(result);
+      final tree = await _pull(result);
+      if (verify || (autoVerify && store.verified < kVerifyGeneration)) {
+        await _verify(result, tree);
+        budget = _pushBudget();
+        for (var round = 0; round < 3 && store.pending.isNotEmpty && budget > 0; round++) {
+          budget -= await _push(result, budget);
+        }
+      }
       store.lastSync = DateTime.now();
       await store.saveState();
       if (result.pushed + result.pulled + result.conflicts + result.skipped > 0 || store.pendingCount > 0) {
@@ -264,7 +289,7 @@ class SyncEngine {
       return;
     }
     final bytes = await crypto.encryptJson(doc, key);
-    final baseSha = store.remoteShas[op.path];
+    final baseSha = _baseOf(op);
     try {
       final newSha = await api.putFile(op.path, bytes, commitMessage, sha: baseSha);
       store.markSynced(op, newSha: newSha);
@@ -275,6 +300,15 @@ class SyncEngine {
       await _resolveUpsertConflict(op, doc, bytes, result, baseSha);
     }
     await store.saveState();
+  }
+
+  /// Die Version, gegen die gesendet wird: worauf die Änderung beruht.
+  /// Hat inzwischen jemand anderes (oder ein anderer Store) gesendet, lehnt
+  /// GitHub ab und die Konfliktbehandlung entscheidet.
+  String? _baseOf(PendingOp op) {
+    final base = op.baseSha;
+    if (base == null) return store.remoteShas[op.path]; // ältere Vormerkung
+    return base.isEmpty ? null : base;
   }
 
   static String _short(String? sha) => sha == null ? 'neu' : sha.substring(0, sha.length < 7 ? sha.length : 7);
@@ -309,7 +343,7 @@ class SyncEngine {
       // Neuere App hat die Datei in einem neuen Format gespeichert: nicht
       // überschreiben. Die veraltete lokale Fassung tritt zurück.
       store.markSynced(op);
-      await store.delete(op.path, fromRemote: true, persistState: false);
+      await store.delete(op.path, fromRemote: true);
       store.unreadable[op.path] = remoteFile.sha;
       store.newer[op.path] = remoteFile.sha;
       result.skipped++;
@@ -329,7 +363,7 @@ class SyncEngine {
       // Beide Seiten haben dasselbe gespeichert (z. B. App und Hintergrund-
       // Abgleich dieselbe Änderung): kein Konflikt, Stand übernehmen.
       store.remoteShas[op.path] = remoteFile.sha;
-      await store.put(op.path, remote, fromRemote: true, persistState: false);
+      await store.put(op.path, remote, fromRemote: true);
       store.markSynced(op);
       AppLog.info(logTag, '${op.path}: gleicher Inhalt auf beiden Seiten, kein Konflikt ($stale)');
       return;
@@ -350,13 +384,13 @@ class SyncEngine {
       final changed = describeDiff(local, remote);
       if (sameDocContent(merged, remote)) {
         store.remoteShas[op.path] = remoteFile.sha;
-        await store.put(op.path, remote, fromRemote: true, persistState: false);
+        await store.put(op.path, remote, fromRemote: true);
         store.markSynced(op);
       } else {
         final newSha = await api.putFile(op.path, await crypto.encryptJson(merged, key), commitMessage,
             sha: remoteFile.sha);
         store.remoteShas[op.path] = newSha;
-        await store.put(op.path, merged, fromRemote: true, persistState: false);
+        await store.put(op.path, merged, fromRemote: true);
         store.markSynced(op, newSha: newSha);
         result.pushed++;
       }
@@ -394,7 +428,9 @@ class SyncEngine {
   }
 
   Future<void> _pushDelete(PendingOp op, SyncResult result) async {
-    final sha = store.remoteShas[op.path];
+    // Nie gesendetes Dokument: remote nur löschen, wenn es inzwischen doch
+    // (von einem anderen Store) gesendet wurde.
+    final sha = (op.baseSha?.isNotEmpty ?? false) ? op.baseSha : store.remoteShas[op.path];
     if (sha == null) {
       store.markSynced(op);
       return;
@@ -406,13 +442,33 @@ class SyncEngine {
       AppLog.info(logTag, 'gelöscht ${op.path} (${_short(sha)})');
     } on GithubApiException catch (e) {
       if (!e.isConflict) rethrow;
-      // Remote zwischenzeitlich geändert: Änderung schlägt Löschung.
       final remoteFile = await api.getFile(op.path);
+      if (remoteFile == null) {
+        store.markSynced(op);
+        return;
+      }
+      Map<String, dynamic>? remote;
+      DecryptionFailedException? unreadableError;
+      try {
+        remote = await crypto.decryptDoc(remoteFile.content!, key);
+      } on DecryptionFailedException catch (e) {
+        unreadableError = e;
+      }
+      if (remote != null && op.known.contains(docHash(remote))) {
+        // Remote liegt ein Stand, den die Löschung schon kannte (z. B. von
+        // einem anderen Store gesendet): trotzdem löschen.
+        await api.deleteFile(op.path, remoteFile.sha, commitMessage);
+        store.markSynced(op);
+        result.pushed++;
+        AppLog.info(logTag, 'gelöscht ${op.path} (veraltete Version ${_short(sha)}, remote ${_short(remoteFile.sha)})');
+        await store.saveState();
+        return;
+      }
+      // Remote zwischenzeitlich von jemand anderem geändert: Änderung schlägt Löschung.
       store.markSynced(op);
-      if (remoteFile == null) return;
       AppLog.warn(logTag, '${op.path}: lokal gelöscht, remote inzwischen geändert – Änderung bleibt');
       try {
-        final remote = await crypto.decryptDoc(remoteFile.content!, key);
+        if (remote == null) throw unreadableError ?? const DecryptionFailedException();
         store.remoteShas[op.path] = remoteFile.sha;
         await store.put(op.path, remote, fromRemote: true);
         result.conflicts++;
@@ -428,7 +484,7 @@ class SyncEngine {
 
   // ---------------------------------------------------------------- Pull
 
-  Future<void> _pull(SyncResult result) async {
+  Future<RepoTree> _pull(SyncResult result) async {
     final tree = await api.getTree();
     await _checkMeta(tree.files[kMetaPath]);
     final remote = {
@@ -454,8 +510,10 @@ class SyncEngine {
           final doc = await crypto.decryptDoc(bytes, key);
           final before = store.get(e.key);
           final was = store.remoteShas[e.key];
-          store.remoteShas[e.key] = e.value;
-          await store.put(e.key, doc, fromRemote: true, persistState: false);
+          if (!await store.adoptRemote(e.key, doc, e.value)) {
+            AppLog.info(logTag, '${e.key}: lokal gerade geändert, Remote-Stand beim nächsten Abgleich');
+            return;
+          }
           result.pulled++;
           AppLog.info(logTag,
               'empfangen ${e.key} (${_short(was)} → ${_short(e.value)}, ${doc['updated_at']}, ${doc['updated_by']})');
@@ -464,7 +522,7 @@ class SyncEngine {
           // Von einer neueren App-Version: die veraltete lokale Kopie
           // ausblenden, damit sie nicht versehentlich zurückgeschrieben wird.
           if (store.get(e.key) != null) {
-            await store.delete(e.key, fromRemote: true, persistState: false);
+            await store.delete(e.key, fromRemote: true);
           }
           store.unreadable[e.key] = e.value;
           store.newer[e.key] = e.value;
@@ -485,13 +543,78 @@ class SyncEngine {
         continue;
       }
       final before = store.get(path);
-      await store.delete(path, fromRemote: true, persistState: false);
+      if (!await store.removeRemote(path)) {
+        AppLog.info(logTag, '$path: remote gelöscht, lokal gerade geändert – beim nächsten Abgleich');
+        continue;
+      }
       result.pulled++;
       result.changes.add(RemoteChange(path, before, null));
       AppLog.info(logTag, 'remote gelöscht $path');
     }
     store.lastTreeSha = tree.sha;
     result.newer = store.newer.length;
+    return tree;
+  }
+
+  // ---------------------------------------------------------- Prüfen
+
+  /// Vergleicht jedes Dokument ohne Vormerkung mit dem Repo. Weicht es ab,
+  /// gewinnt die jüngere Fassung: ist die lokale jünger, war das eine nie
+  /// gesendete Änderung (z. B. eine verlorene Vormerkung) – sie wird jetzt
+  /// gesendet; sonst (oder wenn es lokal fehlt) wird die Remote-Fassung
+  /// übernommen. Lokale Dokumente, die nie im Repo waren, werden gesendet.
+  Future<void> _verify(SyncResult result, RepoTree tree) async {
+    final started = DateTime.now();
+    final remote = {
+      for (final e in tree.files.entries)
+        if (_managed(e.key)) e.key: e.value,
+    };
+    final paths = [
+      for (final e in remote.entries)
+        if (!store.hasPendingFor(e.key) && store.unreadable[e.key] != e.value) e.key,
+    ];
+    var checked = 0;
+    const batch = 6;
+    for (var i = 0; i < paths.length; i += batch) {
+      await Future.wait(paths.skip(i).take(batch).map((path) async {
+        final sha = remote[path]!;
+        final Map<String, dynamic> remoteDoc;
+        try {
+          remoteDoc = await crypto.decryptDoc(await api.getBlob(sha), key);
+        } on DecryptionFailedException {
+          return;
+        }
+        checked++;
+        final local = store.get(path);
+        if (store.hasPendingFor(path) || (local != null && sameDocContent(local, remoteDoc))) return;
+        if (local != null && docUpdatedAt(local).isAfter(docUpdatedAt(remoteDoc))) {
+          store.remoteShas[path] = sha;
+          await store.requeue(path);
+          result.repairedOut++;
+          AppLog.warn(logTag,
+              'Prüfabgleich: $path lokal neuer, nie gesendet – wird jetzt gesendet (${describeDiff(local, remoteDoc)})');
+        } else if (await store.adoptRemote(path, remoteDoc, sha)) {
+          result.repairedIn++;
+          result.changes.add(RemoteChange(path, local, remoteDoc));
+          AppLog.warn(
+              logTag,
+              local == null
+                  ? 'Prüfabgleich: $path fehlte lokal – Remote-Stand übernommen'
+                  : 'Prüfabgleich: $path lokal veraltet – Remote-Stand übernommen (${describeDiff(local, remoteDoc)})');
+        }
+      }));
+    }
+    for (final e in store.docs.entries) {
+      if (!_managed(e.key) || remote.containsKey(e.key) || store.remoteShas.containsKey(e.key)) continue;
+      if (store.hasPendingFor(e.key)) continue;
+      await store.requeue(e.key);
+      result.repairedOut++;
+      AppLog.warn(logTag, 'Prüfabgleich: ${e.key} nur lokal vorhanden, nie gesendet – wird jetzt gesendet');
+    }
+    store.verified = kVerifyGeneration;
+    AppLog.info(logTag,
+        'Prüfabgleich: $checked Dokumente verglichen, ${result.repairedOut} nachgesendet, '
+        '${result.repairedIn} nachgeladen, ${DateTime.now().difference(started).inMilliseconds} ms');
   }
 
   /// Prüft meta.json, wenn sie sich geändert hat (ein Request pro Änderung,

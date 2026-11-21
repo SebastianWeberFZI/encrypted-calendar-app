@@ -103,6 +103,9 @@ class CalendarRepository {
       mergeGroups: const [
         {'all_day', 'start', 'end', 'time_zone', 'recurrence', 'exdates'},
       ],
+      // Einmalig jedes Dokument mit dem Repo vergleichen (verlorene
+      // Vormerkungen aus 0.1.8/0.1.9 nachsenden).
+      autoVerify: true,
     );
     return SourceRuntime(cfg, key, store, api, engine);
   }
@@ -123,14 +126,14 @@ class CalendarRepository {
     });
   }
 
-  /// Lädt eine Datenquelle neu von der Platte (nach Hintergrund-Sync).
+  /// Holt, was der Hintergrund-Abgleich inzwischen gespeichert hat, in den
+  /// Speicher.
   Future<bool> reloadIfChangedOnDisk() async {
     var changed = false;
     for (final s in sources) {
-      if (await s.store.changedOnDisk()) {
-        await s.store.init();
+      if (await s.store.refresh()) {
         changed = true;
-        AppLog.info('sync/${s.config.label}', 'Stand von der Platte neu geladen (Hintergrund-Abgleich)');
+        AppLog.info('sync/${s.config.label}', 'Stand von der Platte aktualisiert (Hintergrund-Abgleich)');
       }
     }
     if (changed) touch();
@@ -265,7 +268,7 @@ class CalendarRepository {
     final s = source(c.sourceId);
     if (s == null) return;
     for (final e in events.where((e) => e.calendarKey == c.key).toList()) {
-      await s.store.delete(e.path, persistState: false);
+      await s.store.delete(e.path);
     }
     await s.store.delete(c.path);
     touch();
@@ -290,7 +293,7 @@ class CalendarRepository {
       s.lastResult = r;
       s.error = null;
       s.notice = r.newer > 0 ? kNewerDataHint : null;
-      if (r.reloaded || r.pulled > 0 || r.conflicts > 0 || r.merged > 0 || r.newer > 0) touch();
+      if (r.reloaded || r.pulled > 0 || r.conflicts > 0 || r.merged > 0 || r.repairedIn > 0 || r.newer > 0) touch();
       return r;
     } on RepoTooNewException catch (e) {
       s.error = e.message;

@@ -158,7 +158,7 @@ void main() {
     final (a, _) = await device('a');
     await a.put('events/1.enc', doc('A', DateTime(2026, 1, 1)));
     final state = File('${tmp.path}/a/state.enc');
-    await state.delete();
+    if (await state.exists()) await state.delete();
     await Directory(state.path).create(); // Umbenennen auf ein Verzeichnis scheitert
     await expectLater(a.saveState(), throwsA(isA<FileSystemException>()));
     await Directory(state.path).delete();
@@ -166,6 +166,140 @@ void main() {
     expect(await state.exists(), isTrue);
     final (again, _) = await device('a');
     expect(again.pendingCount, 1);
+  });
+
+  test('Zwei Stores ändern kurz nacheinander: nichts geht verloren', () async {
+    final (a0, ea0) = await device('a');
+    await a0.put('events/1.enc', doc('Milch', DateTime(2026, 1, 1)));
+    await a0.put('events/2.enc', doc('Brot', DateTime(2026, 1, 1)));
+    await ea0.sync();
+
+    // Zwei Tipps: je ein eigener Store, beide laden vor dem Speichern.
+    final (w1, ew1) = await device('a');
+    final (w2, ew2) = await device('a');
+    await w1.put('events/1.enc', doc('Milch gekauft', DateTime(2026, 1, 2)));
+    await w2.put('events/2.enc', doc('Brot gekauft', DateTime(2026, 1, 2)));
+    await Future.wait([ew1.sync(), ew2.sync()]);
+
+    final (c, ec) = await device('c');
+    await ec.sync();
+    expect(c.get('events/1.enc')!['title'], 'Milch gekauft');
+    expect(c.get('events/2.enc')!['title'], 'Brot gekauft');
+    expect(w1.pendingCount + w2.pendingCount, 0);
+    expect(Directory('${tmp.path}/a/pending').listSync(), isEmpty);
+  });
+
+  test('Die App überschreibt keine Vormerkung des Hintergrund-Abgleichs', () async {
+    final (ui, eui) = await device('a');
+    await ui.put('events/1.enc', doc('Milch', DateTime(2026, 1, 1)));
+    await eui.sync();
+
+    // Widget hakt ab, sein Abgleich scheitert (z. B. kein Netz) …
+    final (w, _) = await device('a');
+    await w.put('events/1.enc', doc('Milch gekauft', DateTime(2026, 1, 2)));
+    // … dann ändert die App (mit altem Speicherstand) etwas anderes.
+    await ui.put('events/2.enc', doc('Käse', DateTime(2026, 1, 3)));
+    final r = await eui.sync();
+    expect(r.reloaded, isTrue);
+    expect(r.pushed, 2);
+    expect(ui.get('events/1.enc')!['title'], 'Milch gekauft', reason: 'App sieht die Änderung des Widgets');
+
+    final (c, ec) = await device('c');
+    await ec.sync();
+    expect(c.get('events/1.enc')!['title'], 'Milch gekauft');
+    expect(c.get('events/2.enc')!['title'], 'Käse');
+  });
+
+  test('Remote-Stand überschreibt keine gerade lokal gespeicherte Änderung', () async {
+    final (a, ea) = await device('a');
+    final (b, eb) = await device('b');
+    await a.put('events/1.enc', doc('Original', DateTime(2026, 1, 1)));
+    await ea.sync();
+    await eb.sync();
+    await b.put('events/1.enc', doc('Von B', DateTime(2026, 1, 2)));
+    await eb.sync();
+
+    // Ein zweiter Store auf Gerät A ändert, nachdem A geladen hat.
+    final (w, _) = await device('a');
+    expect(await a.refresh(), isFalse);
+    await w.put('events/1.enc', doc('Von Widget', DateTime(2026, 1, 3)));
+    expect(await a.adoptRemote('events/1.enc', doc('Von B', DateTime(2026, 1, 2)), 'x'), isFalse);
+    expect(await a.touchedElsewhere('events/1.enc'), isTrue);
+
+    // Der nächste Abgleich lädt die Widget-Änderung und sendet sie.
+    final r = await ea.sync();
+    expect(r.conflicts, 1, reason: 'B und Widget haben denselben Titel verschieden geändert');
+    expect(a.get('events/1.enc')!['title'], 'Von Widget');
+    await eb.sync();
+    expect(b.get('events/1.enc')!['title'], 'Von Widget');
+  });
+
+  test('Prüfabgleich sendet verlorene Änderungen nach und lädt veraltete neu', () async {
+    final (a, ea) = await device('a');
+    final (b, eb) = await device('b');
+    for (final t in ['1', '2', '3']) {
+      await a.put('events/$t.enc', doc('Artikel $t', DateTime(2026, 1, 1)));
+    }
+    await ea.sync();
+    await eb.sync();
+
+    // Auf A gehen Vormerkungen verloren (wie in 0.1.5/0.1.6): Dokument
+    // gespeichert, Journal-Eintrag weg; ein Dokument kam nie an.
+    await a.put('events/1.enc', doc('Artikel 1 gekauft', DateTime(2026, 1, 5)));
+    await a.put('events/4.enc', doc('Neu', DateTime(2026, 1, 5)));
+    for (final f in Directory('${tmp.path}/a/pending').listSync()) {
+      f.deleteSync();
+    }
+    // Auf B ist Artikel 2 neuer.
+    await b.put('events/2.enc', doc('Artikel 2 geändert', DateTime(2026, 1, 6)));
+    await eb.sync();
+
+    final (a2, ea2) = await device('a');
+    expect(a2.pendingCount, 0);
+    expect((await ea2.sync()).repairedOut, 0, reason: 'ohne Prüfabgleich fällt nichts auf');
+    final r = await ea2.sync(verify: true);
+    expect(r.repairedOut, 2);
+    expect(r.repairedIn, 0, reason: 'Artikel 2 kam schon über den normalen Abgleich');
+    expect(a2.verified, kVerifyGeneration);
+    await eb.sync();
+    expect(b.get('events/1.enc')!['title'], 'Artikel 1 gekauft');
+    expect(b.get('events/4.enc')!['title'], 'Neu');
+    expect(a2.get('events/2.enc')!['title'], 'Artikel 2 geändert');
+    expect((await ea2.sync(verify: true)).repairedOut, 0, reason: 'jetzt stimmt alles');
+  });
+
+  test('Prüfabgleich läuft mit autoVerify einmal von selbst', () async {
+    final (a, ea) = await device('a');
+    await a.put('events/1.enc', doc('X', DateTime(2026, 1, 1)));
+    await ea.sync();
+    await a.put('events/1.enc', doc('X gekauft', DateTime(2026, 1, 2)));
+    for (final f in Directory('${tmp.path}/a/pending').listSync()) {
+      f.deleteSync();
+    }
+    final store = DocStore(baseDir: '${tmp.path}/a', crypto: crypto, key: key);
+    await store.init();
+    final api = GithubApi(const GithubConfig(owner: 'o', repo: 'r', token: 't'), client: gh.client());
+    final engine = SyncEngine(
+        store: store, api: api, crypto: crypto, key: key, managedDirs: const ['events'], autoVerify: true);
+    expect((await engine.sync()).repairedOut, 1);
+    expect((await engine.sync()).repairedOut, 0);
+    final (c, ec) = await device('c');
+    await ec.sync();
+    expect(c.get('events/1.enc')!['title'], 'X gekauft');
+  });
+
+  test('Löschen eines Dokuments, das ein anderer Store schon gesendet hat', () async {
+    final (ui, eui) = await device('a');
+    await ui.put('events/1.enc', doc('Neu', DateTime(2026, 1, 1)));
+    final (bg, ebg) = await device('a');
+    await ebg.sync(); // sendet die Neuanlage
+    await ui.delete('events/1.enc'); // die App wusste davon noch nichts
+    await eui.sync();
+    final (c, ec) = await device('c');
+    await ec.sync();
+    expect(c.get('events/1.enc'), isNull);
+    expect(ui.pendingCount, 0);
+    expect(bg.pendingCount, 0);
   });
 
   test('Veraltete Version aus dem anderen Prozess ist kein Konflikt', () async {
@@ -221,7 +355,7 @@ void main() {
   test('Viele Änderungen gehen gedrosselt raus; Drosselung durch GitHub pausiert das Senden', () async {
     final (a, ea) = await device('a');
     for (var i = 0; i < 70; i++) {
-      await a.put('events/$i.enc', doc('T$i', DateTime(2026, 1, 1)), persistState: false);
+      await a.put('events/$i.enc', doc('T$i', DateTime(2026, 1, 1)));
     }
     await a.saveState();
     expect((await ea.sync()).pushed, SyncEngine.maxPushPerSync);
