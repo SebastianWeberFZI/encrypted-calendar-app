@@ -1,7 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../models/calendar_models.dart';
+import '../sync/abo_presets.dart';
+import '../sync/ics.dart';
+import '../sync/subscription_sync.dart';
 import 'format.dart';
 import 'theme.dart';
 
@@ -45,11 +50,16 @@ class CalendarsScreen extends StatelessWidget {
                   ),
                   title: Text(c.name),
                   subtitle: Text([
-                    if (c.isSynced) 'Aus dem ${c.syncLabel}-Kalender von ${c.syncOwner}' else c.kind.label,
+                    if (c.isSubscription)
+                      'Abo · ${c.subscriptionLabel}${_aboState(state, c)}'
+                    else if (c.isSynced)
+                      'Aus dem ${c.syncLabel}-Kalender von ${c.syncOwner}'
+                    else
+                      c.kind.label,
                     '${state.repo.events.where((e) => e.calendarKey == c.key).length} Termine',
                     if (c.colorLabels.isNotEmpty) '${c.colorLabels.length} Farbbedeutungen',
                     if (c.defaultReminders.isNotEmpty)
-                      'Erinnerung: ${reminderLabel(c.defaultReminders.first, allDay: c.kind == CalendarKind.birthdays)}',
+                      'Erinnerung: ${reminderLabel(c.defaultReminders.first, allDay: c.kind == CalendarKind.birthdays || c.isSubscription)}',
                   ].join(' · ')),
                   trailing: Switch(value: state.isVisible(c), onChanged: (_) => state.toggleCalendar(c)),
                   onTap: () => _edit(context, c),
@@ -63,6 +73,14 @@ class CalendarsScreen extends StatelessWidget {
 
   Future<void> _edit(BuildContext context, CalendarDef? existing) =>
       openCalendarEditor(context, state, existing);
+
+  static String _aboState(AppState state, CalendarDef c) {
+    final st = state.settings.subscriptionStatus[c.key];
+    if (st == null) return '';
+    if (st.error.isNotEmpty) return ' · Abruf fehlgeschlagen';
+    final ok = st.lastOk;
+    return ok == null ? '' : ' · aktualisiert ${fmtDateShort(ok)}, ${fmtTime(ok)}';
+  }
 }
 
 class _LabelRow {
@@ -91,6 +109,14 @@ class _CalendarEditorState extends State<CalendarEditor> {
     for (final l in widget.existing?.colorLabels ?? const <ColorLabel>[]) _LabelRow(l.color, l.label),
   ];
 
+  // Abo eines Internet-Kalenders
+  late bool _subscribe = widget.existing?.isSubscription ?? false;
+  late final _url = TextEditingController(text: widget.existing?.subscriptionUrl ?? '');
+  late String _aboLabel = widget.existing?.isSubscription == true ? widget.existing!.subscriptionLabel : '';
+  List<IcsEvent>? _preview;
+  String? _previewError;
+  bool _checking = false;
+
   bool get _isNew => widget.existing == null;
 
   @override
@@ -98,7 +124,56 @@ class _CalendarEditorState extends State<CalendarEditor> {
     for (final r in _labels) {
       r.text.dispose();
     }
+    _url.dispose();
+    _name.dispose();
+    _emoji.dispose();
     super.dispose();
+  }
+
+  /// Abo-Adresse abrufen und die Termine als Vorschau zeigen.
+  Future<void> _check() async {
+    if (_url.text.trim().isEmpty || _checking) return;
+    setState(() {
+      _checking = true;
+      _preview = null;
+      _previewError = null;
+    });
+    try {
+      final events = await SubscriptionService.preview(_url.text);
+      if (!mounted) return;
+      setState(() {
+        _preview = events..sort((a, b) => a.start.compareTo(b.start));
+        if (events.isEmpty) _previewError = 'Die Datei enthält derzeit keine Termine.';
+      });
+    } catch (e) {
+      if (mounted) setState(() => _previewError = '$e');
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  /// Vorlage: Abfuhrtermine des Landkreises Germersheim.
+  Future<void> _germersheim() async {
+    final prev = GermersheimWaste.parse(_url.text);
+    final picked = await showDialog<({String place, List<String> types, bool large})>(
+      context: context,
+      builder: (_) => _GermersheimDialog(initial: prev),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _url.text = GermersheimWaste.url(place: picked.place, types: picked.types, large: picked.large);
+      _aboLabel = GermersheimWaste.label;
+      if (_name.text.trim().isEmpty) _name.text = 'Müllabfuhr';
+      if (_emoji.text.trim().isEmpty) _emoji.text = '🗑️';
+      if (_isNew) _color = 0xFFF08C3A;
+      for (final t in picked.types) {
+        final color = GermersheimWaste.colors[t];
+        if (color == null || _labels.any((r) => r.text.text.trim().toLowerCase() == t.toLowerCase())) continue;
+        _labels.add(_LabelRow(color, t));
+      }
+      if (_reminders.isEmpty) _reminders = [const Reminder(minutesBefore: 840)];
+    });
+    await _check();
   }
 
   void _addLabel() {
@@ -130,14 +205,25 @@ class _CalendarEditorState extends State<CalendarEditor> {
 
   Future<void> _save() async {
     if (_name.text.trim().isEmpty) return;
+    final url = _url.text.trim();
+    if (_subscribe && url.isEmpty) {
+      setState(() => _previewError = 'Bitte die Adresse des Kalenders angeben.');
+      return;
+    }
     final c = widget.existing ??
         CalendarDef(sourceId: _sourceId, name: '', color: _color,
             sortOrder: widget.state.calendars.length);
+    if (_subscribe) {
+      var label = _aboLabel;
+      if (label.isEmpty || label == 'Internet-Kalender') label = Uri.tryParse(url)?.host ?? '';
+      if (label.isEmpty) label = 'Internet-Kalender';
+      c.subscription = {...?c.subscription, 'url': url, 'label': label};
+    }
     c
       ..name = _name.text.trim()
       ..emoji = _emoji.text.trim()
       ..color = _color
-      ..kind = _kind
+      ..kind = _subscribe ? CalendarKind.standard : _kind
       ..defaultReminders = _reminders
       ..colorLabels = [
         for (final r in _labels)
@@ -149,6 +235,9 @@ class _CalendarEditorState extends State<CalendarEditor> {
                     const {}),
       ];
     await widget.state.saveCalendar(c);
+    // Abo gleich abrufen – Adresse, Farben und Erinnerungen gelten für
+    // alle seine Termine.
+    if (_subscribe) unawaited(widget.state.refreshSubscriptionNow(c));
     if (mounted) Navigator.pop(context);
   }
 
@@ -175,10 +264,102 @@ class _CalendarEditorState extends State<CalendarEditor> {
     if (mounted) Navigator.pop(context);
   }
 
+  List<Widget> _aboSection(ThemeData theme) {
+    final existing = widget.existing;
+    final st = existing == null ? null : widget.state.settings.subscriptionStatus[existing.key];
+    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
+    final preview = _preview;
+    return [
+      const SizedBox(height: 20),
+      Text('Abo', style: theme.textTheme.titleSmall),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.recycling),
+        label: const Text('Abfuhrtermine Landkreis Germersheim …'),
+        onPressed: _germersheim,
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: _url,
+        minLines: 1,
+        maxLines: 4,
+        keyboardType: TextInputType.url,
+        decoration: InputDecoration(
+          labelText: 'Adresse (https:// oder webcal://)',
+          helperText: _aboLabel.isNotEmpty ? _aboLabel : null,
+          suffixIcon: _checking
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
+              : IconButton(tooltip: 'Prüfen', icon: const Icon(Icons.travel_explore), onPressed: _check),
+        ),
+        onChanged: (_) => setState(() {
+          _preview = null;
+          _previewError = null;
+        }),
+      ),
+      if (_previewError != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(_previewError!, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error)),
+        ),
+      if (preview != null && preview.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            [
+              '${preview.length} Termine, ab ${fmtDate(preview.first.start)}:',
+              for (final e in preview.take(6)) '  ${fmtDateShort(e.start)}  ${e.summary}',
+              if (preview.length > 6) '  …',
+            ].join('\n'),
+            style: theme.textTheme.bodySmall,
+          ),
+        ),
+      if (existing != null && existing.isSubscription) ...[
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: Text(
+              st == null
+                  ? 'Noch nicht abgerufen'
+                  : [
+                      if (st.lastOk != null) 'Zuletzt aktualisiert ${fmtDate(st.lastOk!)}, ${fmtTime(st.lastOk!)} Uhr',
+                      if (st.summary.isNotEmpty) st.summary,
+                      if (st.error.isNotEmpty) 'Letzter Abruf fehlgeschlagen: ${st.error}',
+                    ].join('\n'),
+              style: st != null && st.error.isNotEmpty
+                  ? theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error)
+                  : muted,
+            ),
+          ),
+          ListenableBuilder(
+            listenable: widget.state,
+            builder: (context, _) => widget.state.refreshingSubscriptions
+                ? const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)))
+                : IconButton(
+                    tooltip: 'Jetzt aktualisieren',
+                    icon: const Icon(Icons.refresh),
+                    onPressed: () async {
+                      await widget.state.refreshSubscriptionNow(existing);
+                      if (mounted) setState(() {});
+                    },
+                  ),
+          ),
+        ]),
+      ],
+      const SizedBox(height: 8),
+      Text('Jedes Handy ruft das Abo etwa zweimal am Tag ab. Die Termine bleiben in der App '
+          'und werden nicht in den Google-Kalender übertragen.', style: muted),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final allDay = _kind == CalendarKind.birthdays;
+    // Abo-Termine sind meist ganztägig (Abfuhrtage, Ferien).
+    final allDay = _kind == CalendarKind.birthdays || _subscribe;
     return Scaffold(
       appBar: AppBar(
         title: Text(_isNew ? 'Neuer Kalender' : 'Kalender bearbeiten'),
@@ -228,12 +409,22 @@ class _CalendarEditorState extends State<CalendarEditor> {
           const SizedBox(height: 20),
           Text('Art', style: theme.textTheme.titleSmall),
           const SizedBox(height: 8),
-          SegmentedButton<CalendarKind>(
-            segments: [
-              for (final k in CalendarKind.values) ButtonSegment(value: k, label: Text(k.label)),
-            ],
-            selected: {_kind},
-            onSelectionChanged: (s) => setState(() => _kind = s.first),
+          if (!_subscribe)
+            SegmentedButton<CalendarKind>(
+              segments: [
+                for (final k in CalendarKind.values) ButtonSegment(value: k, label: Text(k.label)),
+              ],
+              selected: {_kind},
+              onSelectionChanged: (s) => setState(() => _kind = s.first),
+            ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            secondary: const Icon(Icons.rss_feed),
+            title: const Text('Abo eines Internet-Kalenders'),
+            subtitle: const Text('Termine von einer Adresse (ICS), z. B. Müllabfuhr oder Schulferien. '
+                'Sie werden regelmäßig aktualisiert und nicht von Hand geändert.'),
+            value: _subscribe,
+            onChanged: (v) => setState(() => _subscribe = v),
           ),
           if (widget.state.sources.length > 1) ...[
             const SizedBox(height: 20),
@@ -252,12 +443,15 @@ class _CalendarEditorState extends State<CalendarEditor> {
             ),
           ],
         ],
+        if (_subscribe) ..._aboSection(theme),
         const SizedBox(height: 24),
         Text('Farben & Bedeutungen', style: theme.textTheme.titleSmall),
         Padding(
           padding: const EdgeInsets.only(top: 2, bottom: 6),
-          child: Text('Termine in diesem Kalender können eine dieser Farben bekommen. '
-              'Die Bedeutung sehen alle, die den Kalender nutzen.',
+          child: Text(_subscribe
+              ? 'Abo-Termine, deren Titel einer Bedeutung entspricht (z. B. „Restmüll“), bekommen diese Farbe.'
+              : 'Termine in diesem Kalender können eine dieser Farben bekommen. '
+                  'Die Bedeutung sehen alle, die den Kalender nutzen.',
               style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
         ),
         for (final row in _labels)
@@ -294,7 +488,8 @@ class _CalendarEditorState extends State<CalendarEditor> {
           ),
         ),
         const SizedBox(height: 20),
-        Text('Standard-Erinnerungen für neue Termine', style: theme.textTheme.titleSmall),
+        Text(_subscribe ? 'Erinnerungen für alle Termine des Abos' : 'Standard-Erinnerungen für neue Termine',
+            style: theme.textTheme.titleSmall),
         for (var i = 0; i < _reminders.length; i++)
           ListTile(
             contentPadding: EdgeInsets.zero,
@@ -306,7 +501,7 @@ class _CalendarEditorState extends State<CalendarEditor> {
             onTap: () => setState(() => _reminders[i] = _reminders[i].copyWith(email: !_reminders[i].email)),
           ),
         Wrap(spacing: 8, children: [
-          for (final m in allDay ? [0, 1440, 10080] : [0, 15, 60, 1440])
+          for (final m in allDay ? [840, 0, 1440, 10080] : [0, 15, 60, 1440])
             ActionChip(
               label: Text(reminderLabel(Reminder(minutesBefore: m), allDay: allDay)),
               onPressed: () => setState(() {
@@ -320,6 +515,95 @@ class _CalendarEditorState extends State<CalendarEditor> {
         Text('Antippen einer Erinnerung schaltet zusätzlich E-Mail ein/aus.',
             style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
       ]),
+    );
+  }
+}
+
+/// Auswahl für die Abfuhrtermine des Landkreises Germersheim.
+class _GermersheimDialog extends StatefulWidget {
+  const _GermersheimDialog({this.initial});
+  final ({String place, List<String> types, bool large})? initial;
+
+  @override
+  State<_GermersheimDialog> createState() => _GermersheimDialogState();
+}
+
+class _GermersheimDialogState extends State<_GermersheimDialog> {
+  late String? _place = GermersheimWaste.places.contains(widget.initial?.place) ? widget.initial!.place : null;
+  late bool _large = widget.initial?.large ?? false;
+  late final Set<String> _types = widget.initial == null || widget.initial!.types.isEmpty
+      ? GermersheimWaste.types(large: _large).toSet()
+      : widget.initial!.types.toSet();
+
+  void _setLarge(bool v) => setState(() {
+        final from = _large ? 'Gelber Cont.' : 'Gelber Sack';
+        final to = v ? 'Gelber Cont.' : 'Gelber Sack';
+        if (_types.remove(from)) _types.add(to);
+        _large = v;
+      });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final types = GermersheimWaste.types(large: _large);
+    return AlertDialog(
+      title: const Text('Abfuhrtermine Germersheim'),
+      contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+      content: SizedBox(
+        width: 400,
+        child: ListView(shrinkWrap: true, children: [
+          DropdownButtonFormField<String>(
+            initialValue: _place,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Ortschaft'),
+            items: [for (final p in GermersheimWaste.places) DropdownMenuItem(value: p, child: Text(p))],
+            onChanged: (v) => setState(() => _place = v),
+          ),
+          const SizedBox(height: 16),
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, label: Text('bis 240 l')),
+              ButtonSegment(value: true, label: Text('über 240 l')),
+            ],
+            selected: {_large},
+            onSelectionChanged: (s) => _setLarge(s.first),
+          ),
+          const SizedBox(height: 8),
+          for (final t in types)
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              secondary: CircleAvatar(radius: 8, backgroundColor: Color(GermersheimWaste.colors[t] ?? 0xFF78909C)),
+              title: Text(t),
+              value: _types.contains(t),
+              onChanged: (v) => setState(() {
+                if (v == true) {
+                  _types.add(t);
+                } else {
+                  _types.remove(t);
+                }
+              }),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 8),
+            child: Text('Quelle: ${GermersheimWaste.host.replaceFirst('https://', '')}',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Abbrechen')),
+        FilledButton(
+          onPressed: _place == null || _types.isEmpty
+              ? null
+              : () => Navigator.pop(context, (
+                    place: _place!,
+                    types: [for (final t in types) if (_types.contains(t)) t],
+                    large: _large,
+                  )),
+          child: const Text('Übernehmen'),
+        ),
+      ],
     );
   }
 }

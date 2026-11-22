@@ -123,7 +123,7 @@ class EventDetailSheet extends StatelessWidget {
                 onTap: () => launchUrl(Uri.parse(e.url), mode: LaunchMode.externalApplication),
                 child: Text(e.url, style: TextStyle(color: theme.colorScheme.primary)),
               )),
-            if (e.updatedBy.isNotEmpty)
+            if (e.updatedBy.isNotEmpty && !(cal?.isSubscription ?? false))
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
@@ -140,9 +140,11 @@ class EventDetailSheet extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      e.isForeignInstance
-                          ? 'Teil einer Serie aus dem $origin-Kalender – nur dort änderbar.'
-                          : 'Aus dem $origin-Kalender von $owner – nur $owner kann ihn ändern.',
+                      cal != null && cal.isSubscription
+                          ? 'Aus dem Abo „${cal.subscriptionLabel}“ – wird automatisch aktualisiert.'
+                          : e.isForeignInstance
+                              ? 'Teil einer Serie aus dem $origin-Kalender – nur dort änderbar.'
+                              : 'Aus dem $origin-Kalender von $owner – nur $owner kann ihn ändern.',
                       style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
                     ),
                   ),

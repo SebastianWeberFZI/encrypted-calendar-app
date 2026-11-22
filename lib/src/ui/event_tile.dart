@@ -21,8 +21,10 @@ class EventTile extends StatelessWidget {
     final color = Color(occ.color);
     final timeText = occurrenceTimeText(occ, day: day);
     final loc = occ.event?.location ?? '';
+    final label = occ.colorLabel;
     final sub = [
-      ?occ.colorLabel,
+      // „Restmüll · …“ unter dem Titel „Restmüll“ sagt nichts Neues.
+      if (label != null && label.toLowerCase() != occ.title.trim().toLowerCase()) label,
       if (loc.isNotEmpty) loc,
       if (occ.calendar != null && state.calendars.length > 1) occ.calendar!.name,
       if (occ.holiday) 'Feiertag',

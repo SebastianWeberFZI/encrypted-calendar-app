@@ -445,6 +445,23 @@ void main() {
       expect(data.events.length, 2);
     });
 
+    test('Abo-Kalender (z. B. Müllabfuhr) bleiben in der App', () async {
+      final muell = CalendarDef(sourceId: 'g', name: 'Müllabfuhr', color: 0xFFF08C3A,
+          subscription: const {'url': 'https://example.org/muell.ics', 'label': 'Abfallwirtschaft'});
+      data.calendars.add(muell);
+      ev('Restmüll', DateTime(2026, 11, 24), DateTime(2026, 11, 24), cal: muell, allDay: true);
+      ev('Elternabend', DateTime(2026, 11, 20, 19), DateTime(2026, 11, 20, 21));
+      final r = await sync().run();
+      expect(r.exported, 1);
+      expect(dev.live().map((x) => x.title), ['Elternabend']);
+      // auch nicht, wenn der Kalender ausdrücklich als Ziel eingetragen wäre
+      final cfg = GoogleSyncConfig(
+          importCalendarKey: google.key, importFrom: const [1], defaultTarget: 1, targets: {muell.key: 1});
+      final r2 = await sync(config: cfg).run();
+      expect(r2.anything, isFalse, reason: r2.summary);
+      expect(dev.live().map((x) => x.title), ['Elternabend']);
+    });
+
     test('Kalender „nicht übertragen“ entfernt die Kopien; Zuordnen aus „Sarah – Google“', () async {
       ev('A', DateTime(2026, 11, 20, 9), DateTime(2026, 11, 20, 10));
       final g = googleOnly('G', DateTime(2026, 11, 22, 9), DateTime(2026, 11, 22, 10));

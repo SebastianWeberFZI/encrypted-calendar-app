@@ -33,6 +33,7 @@ Beim ersten Start fragt die App nach dem privaten Daten-Repo, einem Fine-grained
 - Startbildschirm-**Widgets**: „Monat“ (scrollbar, Tag antippen legt einen Termin an) und „Agenda“; Kalenderauswahl je Widget über das Zahnrad
 - Offline-First, Sync-Queue, Konflikte: jüngere Änderung gewinnt, die andere bleibt als „(Konflikt)“-Kopie
 - **Abgleich mit dem Google-Kalender** (bzw. jedem Kalender des Handys), siehe unten
+- **Kalender-Abos** (ICS/webcal), z. B. Abfuhrtermine oder Schulferien, siehe unten
 
 ## Google-Kalender abgleichen
 Für alle, die ihren Google-Kalender weiter nutzen. Der Abgleich läuft auf dem Android-Handy dieser
@@ -80,6 +81,24 @@ Danach:
   sollte nur eine Person übernehmen, sonst erscheint er doppelt.
 - Zuordnungen liegen nur auf diesem Handy (`google_sync/state.json`); übernommene Termine tragen im Repo
   das Feld `google` (ID im Handy-Kalender, Besitzerin), der Kalender das Feld `sync` (Besitzerin).
+
+## Kalender-Abos (z. B. Müllabfuhr)
+Ein Kalender kann seine Termine aus einer Internet-Adresse beziehen (iCalendar/ICS, auch `webcal://`):
+Kalender verwalten → **+ Kalender** → „Abo eines Internet-Kalenders“.
+
+- Vorlage **Abfuhrtermine Landkreis Germersheim**: Ortschaft, Behältergröße und Abfallarten wählen. Die
+  Seite des Kreises gibt die Datei erst über ein Formular heraus; die App schickt es beim Abruf selbst ab
+  (das klappt auch mit anderen Seiten, die einen solchen „Als ICS herunterladen“-Knopf haben).
+  Die Vorlage legt Farben je Abfallart und die Erinnerung „Vortag um 19:00“ an.
+- Jedes Handy ruft das Abo etwa alle 12 Stunden ab (App oder Hintergrund; nach einem Fehler nach einer
+  Stunde erneut), im Kalender-Editor auch sofort. Die Termin-IDs entstehen aus Kalender, Tag und Titel –
+  so legen beide Handys dieselben Termine an, ohne Doppelte und ohne Konflikte.
+- Abo-Termine ändert niemand von Hand. Fehlt ein künftiger Termin in der Datei, verschwindet er (z. B.
+  verlegte Abfuhr); Vergangenes und Heutiges bleibt stehen, auch wenn der Anbieter nur „ab heute“ liefert.
+- Farben: Termine, deren Titel einer Farbbedeutung des Kalenders entspricht (z. B. „Restmüll“), bekommen
+  diese Farbe. Erinnerungen und Farben des Kalenders gelten für alle seine Termine.
+- Abo-Kalender werden nicht in den Google-Kalender übertragen.
+- Im Repo: der Kalender trägt das Feld `subscription` (`url`, `label`); der Abrufstand liegt nur auf dem Handy.
 
 ## Protokoll und Konflikte
 - Die App notiert lokal, was beim Abgleich passiert (gesendet, empfangen, Konflikte mit den abweichenden

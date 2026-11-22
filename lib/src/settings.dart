@@ -148,6 +148,23 @@ class LocalSettings {
   bool get googleStatusIsError => _p.getBool('gsync_status_error') ?? false;
   set googleStatusIsError(bool v) => _p.setBool('gsync_status_error', v);
 
+  // ---------------------------------------------------------------- Abos
+  /// Stand der Kalender-Abos auf diesem Handy (Kalender-Schlüssel → Status).
+  Map<String, SubscriptionStatus> get subscriptionStatus {
+    try {
+      final m = jMap(jsonDecode(_p.getString('abo_status') ?? '{}')) ?? {};
+      return {
+        for (final e in m.entries)
+          if (e.value is Map) e.key: SubscriptionStatus.fromJson((e.value as Map).cast<String, dynamic>()),
+      };
+    } on FormatException {
+      return {};
+    }
+  }
+
+  set subscriptionStatus(Map<String, SubscriptionStatus> v) =>
+      _p.setString('abo_status', jsonEncode({for (final e in v.entries) e.key: e.value.toJson()}));
+
   // ---------------------------------------------------------------- Laufzeit
   /// Herzschlag der Vordergrund-App; der Hintergrund-Worker pausiert solange.
   DateTime? get foregroundBeat =>
@@ -155,6 +172,39 @@ class LocalSettings {
   set foregroundBeat(DateTime? v) => v == null
       ? _p.remove('foreground_beat')
       : _p.setString('foreground_beat', v.toIso8601String());
+}
+
+/// Letzter Abruf eines Kalender-Abos auf diesem Handy.
+class SubscriptionStatus {
+  SubscriptionStatus({this.lastOk, this.lastTry, this.error = '', this.summary = '', this.count = 0});
+
+  DateTime? lastOk;
+  DateTime? lastTry;
+
+  /// Fehler des letzten Versuchs ('' = erfolgreich).
+  String error;
+
+  /// Was der letzte erfolgreiche Abruf geändert hat.
+  String summary;
+
+  /// Termine im Abo beim letzten erfolgreichen Abruf.
+  int count;
+
+  Map<String, dynamic> toJson() => {
+        if (lastOk != null) 'ok': lastOk!.toIso8601String(),
+        if (lastTry != null) 'try': lastTry!.toIso8601String(),
+        if (error.isNotEmpty) 'error': error,
+        if (summary.isNotEmpty) 'summary': summary,
+        'count': count,
+      };
+
+  factory SubscriptionStatus.fromJson(Map<String, dynamic> j) => SubscriptionStatus(
+        lastOk: DateTime.tryParse(jStr(j['ok'])),
+        lastTry: DateTime.tryParse(jStr(j['try'])),
+        error: jStr(j['error']),
+        summary: jStr(j['summary']),
+        count: jInt(j['count'], 0),
+      );
 }
 
 class EmailSettings {

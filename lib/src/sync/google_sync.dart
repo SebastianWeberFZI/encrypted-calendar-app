@@ -338,7 +338,8 @@ class GoogleSync {
         }
         continue;
       }
-      final target = config.targetFor(e.calendarKey);
+      // Abo-Termine (z. B. Müllabfuhr) bleiben in der App.
+      final target = calByKey[e.calendarKey]?.isSubscription == true ? null : config.targetFor(e.calendarKey);
       if (target == null) {
         if (pair != null && validTarget(pair.cal)) {
           if (all[pair.row] != null && !all[pair.row]!.deleted) await api.delete(pair.row);

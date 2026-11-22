@@ -112,6 +112,7 @@ class CalendarDef {
     List<ColorLabel>? colorLabels,
     this.sortOrder = 0,
     this.sync,
+    this.subscription,
     DateTime? createdAt,
     DateTime? updatedAt,
     this.updatedBy = '',
@@ -149,6 +150,12 @@ class CalendarDef {
   /// „Sarah – Google“): `{"type": "device", "owner": "Sarah", "label": "Google"}`.
   /// Nur [syncOwner] ändert diese Termine – ihr Handy gleicht sie ab.
   Map<String, dynamic>? sync;
+
+  /// Abo eines Internet-Kalenders (ICS), z. B. Abfuhrtermine:
+  /// `{"url": "https://…", "label": "Abfallwirtschaft Germersheim"}`. Die
+  /// Termine kommen ausschließlich aus dem Abo – niemand ändert sie von Hand,
+  /// jedes Handy gleicht sie regelmäßig ab.
+  Map<String, dynamic>? subscription;
   final DateTime createdAt;
   DateTime updatedAt;
   String updatedBy;
@@ -157,8 +164,14 @@ class CalendarDef {
   String get syncLabel => sync == null ? '' : jStr(sync!['label'], 'Google');
   bool get isSynced => sync != null;
 
-  /// Darf [user] Termine dieses Kalenders anlegen und ändern?
-  bool editableBy(String user) => sync == null || syncOwner.isEmpty || syncOwner == user;
+  bool get isSubscription => subscription != null;
+  String get subscriptionUrl => subscription == null ? '' : jStr(subscription!['url']);
+  String get subscriptionLabel => subscription == null ? '' : jStr(subscription!['label'], 'Internet-Kalender');
+
+  /// Darf [user] Termine dieses Kalenders anlegen und ändern? Abo-Termine
+  /// niemand – das Abo würde Änderungen beim nächsten Abgleich überschreiben.
+  bool editableBy(String user) =>
+      subscription == null && (sync == null || syncOwner.isEmpty || syncOwner == user);
 
   /// Eindeutiger Schlüssel über alle Datenquellen.
   String get key => '$sourceId/$id';
@@ -186,6 +199,7 @@ class CalendarDef {
         'color_labels': colorLabels.map((l) => l.toJson()).toList(),
         'sort_order': sortOrder,
         'sync': ?sync,
+        'subscription': ?subscription,
         'created_at': createdAt.toIso8601String(),
         'updated_at': updatedAt.toIso8601String(),
         'updated_by': updatedBy,
@@ -194,7 +208,7 @@ class CalendarDef {
 
   static const _known = {
     'id', 'name', 'color', 'kind', 'emoji', 'default_reminders',
-    'color_labels', 'sort_order', 'sync', 'created_at', 'updated_at', 'updated_by',
+    'color_labels', 'sort_order', 'sync', 'subscription', 'created_at', 'updated_at', 'updated_by',
     'schema_version',
   };
 
@@ -220,6 +234,7 @@ class CalendarDef {
       colorLabels: jMaps(j['color_labels']).map(ColorLabel.fromJson).toList(),
       sortOrder: jInt(j['sort_order'], 0),
       sync: jMap(j['sync']),
+      subscription: jMap(j['subscription']),
       createdAt: jDate(j['created_at']),
       updatedAt: jDate(j['updated_at']),
       updatedBy: jStr(j['updated_by']),

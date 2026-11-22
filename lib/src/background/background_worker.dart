@@ -13,6 +13,7 @@ import '../services/notification_service.dart';
 import '../services/widget_service.dart';
 import '../settings.dart';
 import '../sync/google_sync_service.dart';
+import '../sync/subscription_sync.dart';
 
 const kPeriodicTask = 'kalender-sync';
 
@@ -31,8 +32,8 @@ void callbackDispatcher() {
   });
 }
 
-/// Ein Durchlauf: Sync (falls die App nicht offen ist), Erinnerungen neu
-/// planen, Widgets aktualisieren, fällige Mails verschicken.
+/// Ein Durchlauf: Sync (falls die App nicht offen ist), Kalender-Abos,
+/// Erinnerungen neu planen, Widgets aktualisieren, fällige Mails verschicken.
 Future<void> runBackgroundCycle({bool force = false}) async {
   final settings = await LocalSettings.load();
   final dir = await getApplicationSupportDirectory();
@@ -54,7 +55,9 @@ Future<void> runBackgroundCycle({bool force = false}) async {
     // Abgleich mit dem Google-Kalender des Handys (falls eingeschaltet);
     // was dabei in der App ankommt, gleich ins Repo übertragen.
     final g = await GoogleSyncService.run(repo, settings);
-    if (g != null && g.appChanged) await repo.syncAll();
+    // Fällige Kalender-Abos (z. B. Müllabfuhr) abrufen.
+    final abo = await SubscriptionService.refreshDue(repo, settings);
+    if ((g != null && g.appChanged) || abo.values.any((r) => r.changedAny)) await repo.syncAll();
   }
 
   final notifications = NotificationService();

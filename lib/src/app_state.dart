@@ -13,6 +13,7 @@ import 'services/widget_service.dart';
 import 'settings.dart';
 import 'sync/google_sync.dart';
 import 'sync/google_sync_service.dart';
+import 'sync/subscription_sync.dart';
 
 /// Zentraler UI-Zustand: Datenquellen, Sichtbarkeit, Sync, Folgeaktionen
 /// (Erinnerungen, Widgets, Mails) nach Datenänderungen.
@@ -266,6 +267,43 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  // ------------------------------------------------------------ Abos
+
+  /// Abruf der Kalender-Abos läuft gerade (für Fortschrittsanzeigen).
+  bool refreshingSubscriptions = false;
+
+  /// Fällige Abos abrufen (höchstens alle 12 Stunden je Handy); mit [force]
+  /// sofort – alle oder nur [onlyKey]. Liefert die Ergebnisse je Kalender.
+  Future<Map<String, SubscriptionResult>> refreshSubscriptions({bool force = false, String? onlyKey}) async {
+    if (refreshingSubscriptions || !repo.calendars.any((c) => c.isSubscription)) return const {};
+    refreshingSubscriptions = true;
+    if (force) notifyListeners();
+    var r = const <String, SubscriptionResult>{};
+    try {
+      r = await SubscriptionService.refreshDue(repo, settings, force: force, onlyKey: onlyKey);
+      if (r.values.any((x) => x.changedAny)) {
+        repo.touch();
+        _scheduleSideEffects();
+        _syncDebounce?.cancel();
+        _syncDebounce = Timer(const Duration(seconds: 1), () => syncNow(silent: true));
+      }
+      return r;
+    } finally {
+      refreshingSubscriptions = false;
+      if (force || r.isNotEmpty) notifyListeners();
+    }
+  }
+
+  /// Ein Abo sofort abrufen und das Ergebnis als Hinweis zeigen.
+  Future<void> refreshSubscriptionNow(CalendarDef c) async {
+    final r = await refreshSubscriptions(force: true, onlyKey: c.key);
+    final res = r[c.key];
+    final st = settings.subscriptionStatus[c.key];
+    toast.value = res != null
+        ? '${c.name}: ${res.summary}'
+        : '${c.name}: ${st != null && st.error.isNotEmpty ? st.error : 'Abruf läuft schon'}';
+  }
+
   void _scheduleSideEffects() {
     _sideEffectsDebounce?.cancel();
     _sideEffectsDebounce = Timer(const Duration(milliseconds: 800), () async {
@@ -295,6 +333,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       final before = repo.version;
       final results = await repo.syncAll();
       await googleSyncNow();
+      unawaited(refreshSubscriptions());
       final changes = results.fold<int>(0, (s, r) => s + r.pulled);
       final conflicts = results.fold<int>(0, (s, r) => s + r.conflicts);
       final notices = [

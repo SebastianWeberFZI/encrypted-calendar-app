@@ -430,18 +430,25 @@ class _GoogleSyncScreenState extends State<GoogleSyncScreen> {
                 subtitle: Text(targets.isEmpty ? 'Alle wie oben' : '${targets.length} abweichend'),
                 children: [
                   for (final c in appCals)
-                    ListTile(
-                      leading: CircleAvatar(backgroundColor: Color(c.color), radius: 8),
-                      title: Text(c.isSynced && c.syncOwner != s.userName
-                          ? '${c.name} (aus dem ${c.syncLabel}-Kalender von ${c.syncOwner})'
-                          : c.name),
-                      subtitle: _targetDropdown(targets[c.key] ?? -2, (v) {
-                        final t = Map.of(targets);
-                        v == -2 ? t.remove(c.key) : t[c.key] = v;
-                        s.googleTargets = t;
-                        _changed();
-                      }, withDefault: true),
-                    ),
+                    if (c.isSubscription)
+                      ListTile(
+                        leading: CircleAvatar(backgroundColor: Color(c.color), radius: 8),
+                        title: Text(c.name),
+                        subtitle: const Text('Abo – bleibt in der App, wird nicht übertragen'),
+                      )
+                    else
+                      ListTile(
+                        leading: CircleAvatar(backgroundColor: Color(c.color), radius: 8),
+                        title: Text(c.isSynced && c.syncOwner != s.userName
+                            ? '${c.name} (aus dem ${c.syncLabel}-Kalender von ${c.syncOwner})'
+                            : c.name),
+                        subtitle: _targetDropdown(targets[c.key] ?? -2, (v) {
+                          final t = Map.of(targets);
+                          v == -2 ? t.remove(c.key) : t[c.key] = v;
+                          s.googleTargets = t;
+                          _changed();
+                        }, withDefault: true),
+                      ),
                 ],
               ),
               header('Handy-Kalender → App'),
